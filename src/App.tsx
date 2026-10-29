@@ -16,6 +16,7 @@ import { Avatar, Menu } from './ui'
 const NAV = [
   ['', 'Сейчас'],
   ['calendars', 'Календари'],
+  ['teams', 'Команды'],
   ['escalation', 'Эскалации'],
   ['notifications', 'Уведомления'],
   ['people', 'Сотрудники'],
@@ -32,6 +33,7 @@ function Icon({ d }: { d: string }) {
 const ICONS = [
   'M12 8v4l2.5 1.5 M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18',
   'M5 5h14v14H5z M5 10h14',
+  'M8 20v-1a3 3 0 0 1 3-3h0a3 3 0 0 1 3 3v1 M11 13a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5 M16 20v-1a2.8 2.8 0 0 0-2-2.6 M15.5 4.2a2.5 2.5 0 0 1 0 4.6',
   'M12 4v10 M8 10l4 4 4-4 M6 20h12',
   'M4 12l16-7-7 16-2-7z',
   'M16 19v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1 M9.5 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6 M20 19v-1a3.5 3.5 0 0 0-2.5-3.3 M16 5.1a3 3 0 0 1 0 5.8',
@@ -69,9 +71,9 @@ export default function App() {
         </div>
         <nav className="flex-1 space-y-0.5 px-2">
           {NAV.map(([to, label], i) => {
-            const active = (route[0] ?? '') === to || (to === 'calendars' && route[0] === 'teams')
+            const active = (route[0] ?? '') === to
             return (
-              <a key={to || 'home'} href={`#/${to}`} className={`flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] ${active ? 'bg-surface-2 font-medium text-ink' : 'text-muted hover:bg-surface-2 hover:text-ink'}`}>
+              <a key={to || 'home'} href={`#/${to}`} className={`flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] ${active ? 'nav-active font-medium' : 'text-muted hover:bg-surface-2 hover:text-ink'}`}>
                 <Icon d={ICONS[i]} />{label}
               </a>
             )

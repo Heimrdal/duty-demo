@@ -89,19 +89,19 @@
 
 .dark {
   --c-canvas: #101012;
-  --c-surface: #18181b;
-  --c-surface-2: #212126;
-  --c-ink: #eeeeef;
-  --c-muted: #a0a0a8;
-  --c-faint: #6f6f78;
-  --c-line: #2a2a30;
-  --c-line-strong: #34343c;
-  --c-accent: #6d75db;
-  --c-accent-2: #828be6;
-  --c-accent-soft: #23243a;
-  --c-danger: #ff6369;
-  --c-ok: #3dbea5;
-  --c-warn: #f0a04b;
+  --c-surface: #1c1c22;
+  --c-surface-2: #2a2a34;
+  --c-ink: #f4f4f5;
+  --c-muted: #c6c6d0;
+  --c-faint: #a3a3ae;
+  --c-line: #3a3a46;
+  --c-line-strong: #8d8d9c;
+  --c-accent: #9aa3f5;
+  --c-accent-2: #b4bbff;
+  --c-accent-soft: #343864;
+  --c-danger: #ff8a8e;
+  --c-ok: #5ee0c5;
+  --c-warn: #ffc46b;
   --c-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 16px 40px rgba(0, 0, 0, 0.28);
   color-scheme: dark;
 }
@@ -118,7 +118,28 @@ body {
 h1, h2, h3 { letter-spacing: -0.02em; }
 ::selection { background: color-mix(in srgb, var(--c-accent) 28%, transparent); }
 button, a, input, select, textarea { transition: background-color .15s ease, color .15s ease, border-color .15s ease, box-shadow .15s ease, opacity .15s ease; }
-input, select, textarea { accent-color: var(--c-accent); }
+input, select, textarea { accent-color: var(--c-accent); color: var(--c-ink); background-color: var(--c-surface); }
+.dark input,
+.dark select,
+.dark textarea {
+  background-color: #2e2e3a;
+  color: #f7f7f8;
+  border-color: #a4a4b4;
+  color-scheme: dark;
+}
+.dark input::placeholder,
+.dark textarea::placeholder { color: #c2c2cc; }
+.dark option,
+.dark optgroup { background-color: #2e2e3a; color: #f7f7f8; }
+.dark input:disabled,
+.dark select:disabled,
+.dark textarea:disabled { color: #e4e4ea; opacity: 1; }
+.nav-active {
+  background: var(--c-accent-soft);
+  color: var(--c-ink);
+  box-shadow: inset 3px 0 0 var(--c-accent);
+}
+.dark .nav-active { background: #3d4378; color: #ffffff; }
 
 .scroll-thin::-webkit-scrollbar { height: 8px; width: 8px; }
 .scroll-thin::-webkit-scrollbar-thumb { background: var(--c-line-strong); border-radius: 99px; }

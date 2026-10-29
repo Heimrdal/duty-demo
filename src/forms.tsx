@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { addDays, calendarOnCall, fmtDT, fmtDur, isoDate, layerAnchor, layerOnCall, periodMs, rotationLabel, startOfDay, uid } from './engine'
+import { addDays, calendarOnCall, describePattern, fmtDT, fmtDur, isoDate, layerAnchor, layerOnCall, periodMs, rotationLabel, startOfDay, uid } from './engine'
 import { useStore } from './store'
 import { Avatar, Btn, Field, inputCls, KIND_META, KindMark, Modal } from './ui'
 import type { Calendar, Layer, LayerKind, Restriction } from './types'
@@ -34,23 +34,37 @@ const TEMPLATES: Tpl[] = [
 ]
 
 /* ---------------- «Взять дежурство» ---------------- */
+function preferredCalendars(calendars: Calendar[], userId: string, team: string, pinned?: string) {
+  const mine = calendars.filter((c) => c.id === pinned || c.team === team || c.ownerId === userId || c.layers.some((l) => l.participants.includes(userId)))
+  const base = mine.length ? mine : calendars
+  const newest = [...base].reverse()
+  if (!pinned) return newest
+  const hit = newest.find((c) => c.id === pinned)
+  return hit ? [hit, ...newest.filter((c) => c.id !== pinned)] : newest
+}
+
 export function TakeDutyModal({ calendarId, onClose }: { calendarId?: string; onClose: () => void }) {
   const { state, updateCalendar, sendTg, toast } = useStore()
   const me = state.people.find((p) => p.id === state.currentUserId)!
-  const [calId, setCalId] = useState(calendarId ?? state.calendars[0]?.id)
+  const ordered = preferredCalendars(state.calendars, me.id, me.team, calendarId)
+  const [calId, setCalId] = useState(ordered[0]?.id ?? '')
   const c = state.calendars.find((x) => x.id === calId)!
   const today = startOfDay(new Date())
   const presets = useMemo(() => {
-    const sat = addDays(today, (5 - ((today.getDay() + 6) % 7) + 7) % 7)
+    const now = Date.now()
+    const sat0 = addDays(today, (5 - ((today.getDay() + 6) % 7) + 7) % 7)
+    const sat = sat0.getTime() <= now ? addDays(sat0, 7) : sat0
     const mon = addDays(today, 7 - ((today.getDay() + 6) % 7))
     const at = (d: Date, h: number) => { const x = new Date(d); x.setHours(h, 0, 0, 0); return x }
-    return [
-      { label: 'Сутки с сегодня 10:00', s: at(today, 10), e: at(addDays(today, 1), 10) },
+    const todayStart = at(today, 10)
+    const list = [
       { label: 'Завтра (сутки)', s: at(addDays(today, 1), 10), e: at(addDays(today, 2), 10) },
       { label: 'Ближайшие выходные', s: at(sat, 0), e: at(addDays(sat, 2), 0) },
       { label: 'Следующая неделя', s: at(mon, 10), e: at(addDays(mon, 7), 10) },
       { label: '2 недели (для разработки)', s: at(mon, 10), e: at(addDays(mon, 14), 10) },
     ]
+    if (todayStart.getTime() > now) list.unshift({ label: 'Сутки с сегодня 10:00', s: todayStart, e: at(addDays(today, 1), 10) })
+    return list.filter((p) => p.s.getTime() > now)
   }, [today.getTime()]) // eslint-disable-line
   const [start, setStart] = useState(toLocalInput(presets[0].s))
   const [end, setEnd] = useState(toLocalInput(presets[0].e))
@@ -59,8 +73,9 @@ export function TakeDutyModal({ calendarId, onClose }: { calendarId?: string; on
   const [note, setNote] = useState('')
   const sT = new Date(start).getTime()
   const eT = new Date(end).getTime()
-  const candidates = c ? calendarOnCall(c, sT + 1).filter((e) => e.personId !== me.id) : []
-  const valid = c && eT > sT && (mode === 'add' || replaces)
+  const inPast = sT < Date.now()
+  const candidates = c ? calendarOnCall(c, Math.max(sT, Date.now()) + 1).filter((e) => e.personId !== me.id) : []
+  const valid = c && eT > sT && !inPast && (mode === 'add' || replaces)
 
   const submit = () => {
     if (!valid) return
@@ -82,7 +97,7 @@ export function TakeDutyModal({ calendarId, onClose }: { calendarId?: string; on
         <p className="text-sm text-muted"><span className="text-ink">{me.name}</span> записывается на себя. Календарь и время — остальное подставим.</p>
         <Field label="Календарь">
           <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
-            {state.calendars.map((x) => (
+            {ordered.map((x) => (
               <button key={x.id} onClick={() => setCalId(x.id)} className={`rounded-lg border px-3 py-2 text-left text-sm ${x.id === calId ? 'border-accent bg-accent-soft' : 'border-line hover:bg-surface-2'}`}>
                 <div className="font-medium">{x.name}</div>
               </button>
@@ -120,7 +135,7 @@ export function TakeDutyModal({ calendarId, onClose }: { calendarId?: string; on
         )}
         <Field label="Комментарий"><input className={inputCls} value={note} onChange={(e) => setNote(e.target.value)} placeholder="например: релиз 2.14, ночное окно" /></Field>
         <div className="flex items-center justify-between gap-4 pt-2">
-          <div className="text-sm text-muted">{eT > sT ? <>{fmtDur(eT - sT)} · {fmtDT(sT)}</> : <span className="text-danger">Окончание раньше начала</span>}</div>
+          <div className="text-sm text-muted">{inPast ? <span className="text-danger">Начало уже в прошлом — выберите будущий интервал</span> : eT > sT ? <>{mode === 'replace' ? 'Подмена' : 'Разовое'} · {fmtDur(eT - sT)} · {fmtDT(sT)}</> : <span className="text-danger">Окончание раньше начала</span>}</div>
           <div className="flex gap-2"><Btn variant="ghost" onClick={onClose}>Отмена</Btn><Btn onClick={submit} disabled={!valid}>Взять дежурство</Btn></div>
         </div>
       </div>
@@ -167,9 +182,20 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
   }, [l])
   const dayNames = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
   const active = TEMPLATES.find((t) => t.id === tpl)
+  const pattern = describePattern(l, (id) => state.people.find((p) => p.id === id)?.name ?? id)
+  const needForSutki = 4 * Math.max(1, Math.min(l.parallel, Math.max(l.participants.length, 1)))
+  const sutkiMatches = l.rotation.unit === 'day' && l.rotation.count === 1 && pattern.regular && pattern.onPeriods === 1 && pattern.offPeriods === 3
+  const patternNote = (
+    <div className="rounded-lg bg-surface-2 px-3 py-2 text-sm leading-relaxed">
+      <div data-testid="pattern-line">{pattern.line}</div>
+      {tpl === 'sutki' && l.participants.length > 0 && !sutkiMatches && (
+        <div className="mt-1 text-muted">Чтобы вышло «сутки через трое» при {Math.min(l.parallel, l.participants.length)} параллельно, в очереди нужно {needForSutki} человек. Строка выше — фактический ритм.</div>
+      )}
+    </div>
+  )
 
   return (
-    <Modal title={layer ? l.name || 'Слой' : 'Новый слой'} onClose={onClose} wide>
+    <Modal title={layer ? l.name || 'Слой' : 'Добавить ротацию'} onClose={onClose} wide>
       <div className="mb-6 flex items-center justify-between gap-4 text-sm">
         <div className="text-muted">Шаг {step + 1} из {steps.length} · {steps[step]}</div>
         <div className="flex gap-1">
@@ -184,12 +210,13 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
             <div className="mb-2 text-sm font-medium">Шаблоны</div>
             <div className="divide-y divide-line rounded-xl border border-line">
               {TEMPLATES.map((t) => (
-                <button key={t.id} onClick={() => applyTpl(t)} className={`flex w-full items-baseline justify-between gap-4 px-3 py-2.5 text-left text-sm hover:bg-surface-2 ${tpl === t.id ? 'bg-accent-soft' : ''}`}>
-                  <span className="font-medium">{t.name}</span>
+                <button key={t.id} type="button" aria-pressed={tpl === t.id} onClick={() => applyTpl(t)} className={`flex w-full items-baseline justify-between gap-4 px-3 py-2.5 text-left text-sm hover:bg-surface-2 ${tpl === t.id ? 'bg-accent-soft ring-2 ring-inset ring-accent' : ''}`}>
+                  <span className="font-medium">{t.name}{tpl === t.id ? <span className="ml-2 text-xs font-medium text-accent">Выбран</span> : null}</span>
                   <span className="text-right text-xs text-muted">{t.hint}</span>
                 </button>
               ))}
             </div>
+            {active && <p className="mt-2 text-sm text-muted">Выбран шаблон «{active.name}».</p>}
           </div>
           <Field label="Название слоя" hint="Что покрывает слой: основная смена, ночь, резерв.">
             <input autoFocus className={inputCls} value={l.name} onChange={(e) => set({ name: e.target.value })} placeholder="Например: Основная ротация разработки" />
@@ -207,7 +234,8 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
       )}
       {step === 1 && (
         <div className="space-y-6">
-          {active && <p className="text-sm text-muted">Шаблон «{active.name}». Длительность можно поправить.</p>}
+          {active && <p className="text-sm font-medium">Шаблон «{active.name}» выбран. Длительность можно поправить.</p>}
+          {patternNote}
           <Field label="Длительность смены">
             <div className="mb-3 flex flex-wrap gap-2">
               {[['day', 1, 'Сутки'], ['day', 2, '2 суток'], ['day', 3, '3 суток'], ['week', 1, 'Неделя'], ['week', 2, '2 недели'], ['week', 4, '4 недели']].map(([u, n, lbl]) => (
@@ -229,7 +257,7 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
         <div className="grid grid-cols-1 gap-8 md:grid-cols-2">
           <div>
             <div className="mb-2 text-sm font-medium">Участники</div>
-            {tpl === 'sutki' && <p className="mb-2 text-xs text-muted">Для «сутки через трое» в очереди обычно четверо.</p>}
+            {tpl === 'sutki' && <p className="mb-2 text-xs text-muted">Для «сутки через трое» на одно место обычно четверо. Шаблон выбран.</p>}
             <div className="max-h-80 space-y-3 overflow-y-auto pr-1 scroll-thin">
               {teams.map((t) => (
                 <div key={t}>
@@ -260,12 +288,22 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
             </ol>
             <div className="mt-6">
               <Field label="Сколько человек одновременно" hint="Для второй группы заведите ещё один слой.">
+                <p className="mb-2 text-sm font-medium" data-testid="parallel-state">Выбрано: {l.parallel} одновременно</p>
                 <div className="flex gap-2">
-                  {[1, 2, 3, 4, 5].map((n) => (
-                    <button key={n} disabled={n > Math.max(1, l.participants.length)} onClick={() => set({ parallel: n })} className={`h-9 w-9 rounded-lg text-sm font-medium disabled:opacity-30 ${l.parallel === n ? 'bg-accent text-white' : 'bg-surface-2 text-ink'}`}>{n}</button>
-                  ))}
+                  {[1, 2, 3, 4, 5].map((n) => {
+                    const blocked = n > Math.max(l.participants.length, 0)
+                    return (
+                      <button key={n} type="button" data-testid={`parallel-${n}`} aria-pressed={l.parallel === n} disabled={blocked} title={blocked ? `Отметьте минимум ${n} участников` : `Одновременно ${n}`} onClick={() => set({ parallel: n })} className={`h-9 w-9 rounded-lg text-sm font-medium ring-offset-2 ring-offset-surface disabled:cursor-not-allowed disabled:opacity-40 ${l.parallel === n ? 'bg-accent text-white ring-2 ring-accent' : 'bg-surface-2 text-ink'}`}>{n}</button>
+                    )
+                  })}
                 </div>
+                {[1, 2, 3, 4, 5].some((n) => n > l.participants.length) && (
+                  <p className="mt-2 text-xs text-muted" data-testid="parallel-hint">
+                    Кнопки {[1, 2, 3, 4, 5].filter((n) => n > l.participants.length).join(', ')} недоступны: отметьте минимум {[1, 2, 3, 4, 5].find((n) => n > l.participants.length)} участников.
+                  </p>
+                )}
               </Field>
+              <div className="mt-4">{patternNote}</div>
             </div>
           </div>
         </div>
@@ -299,7 +337,9 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
       {step === 4 && (
         <div className="space-y-4 text-sm">
           <div className="flex flex-wrap items-center gap-3"><span className="text-base font-medium">{l.name}</span><KindMark k={l.kind} /></div>
-          <p className="text-muted">{rotationLabel(l)}, передача в {l.handoffTime}, {Math.min(l.parallel, l.participants.length)} одновременно{active ? ` · шаблон «${active.name}»` : ''}</p>
+          {active && <p className="font-medium">Шаблон «{active.name}» выбран · одновременно {l.parallel}</p>}
+          <p className="text-muted">{rotationLabel(l)}, передача в {l.handoffTime}</p>
+          {patternNote}
           <div className="space-y-1">
             {preview.map((r, i) => (
               <div key={i} className="flex flex-wrap items-center gap-3 rounded-lg px-1 py-1.5">

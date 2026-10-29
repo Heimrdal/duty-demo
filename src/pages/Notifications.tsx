@@ -54,7 +54,7 @@ export function Notifications() {
         <div className="overflow-hidden rounded-xl border border-line bg-surface lg:col-span-3">
           <div className="flex items-center gap-3 border-b border-line px-4 py-3">
             <div className="flex-1"><div className="text-sm font-medium">Журнал Telegram</div><div className="text-xs text-faint">только на этом стенде</div></div>
-            <select className="rounded-lg bg-transparent text-sm text-muted" value={who} onChange={(e) => setWho(e.target.value)}>
+            <select className={`${inputCls} w-56`} value={who} onChange={(e) => setWho(e.target.value)}>
               <option value="all">Все</option>
               {state.people.map((p) => <option key={p.id} value={p.id}>{p.name}{p.id === me.id ? ' (вы)' : ''}</option>)}
             </select>

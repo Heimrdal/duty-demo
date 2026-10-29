@@ -127,7 +127,7 @@ export function calendarOnCall(c: Calendar, t: number): OnCallEntry[] {
         continue
       }
     }
-    entries.push({ personId: s.personId, layerId: null, layerName: 'Взятое дежурство', kind: 'override' })
+    entries.push({ personId: s.personId, layerId: null, layerName: 'Разовое', kind: 'oneoff' })
   }
   // убираем дубли
   const seen = new Set<string>()
@@ -140,6 +140,7 @@ export interface Segment {
   end: number
   personId: string
   extra?: string
+  hatch?: boolean
 }
 
 /** Сегменты для таймлайна: почасовая выборка + склейка */
@@ -217,7 +218,7 @@ export function personDutySpans(calendars: Calendar[], personId: string, from: n
       if (end <= start) continue
       out.push({
         start, end, personId, calendarId: c.id, calendarName: c.name, layerId: null,
-        layerName: s.replacesPersonId ? 'Подмена' : 'Своё дежурство', kind: 'override', replacedId: s.replacesPersonId, note: s.note,
+        layerName: s.replacesPersonId ? 'Подмена' : 'Разовое', kind: s.replacesPersonId ? 'override' : 'oneoff', replacedId: s.replacesPersonId, note: s.note,
       })
     }
   }
@@ -265,6 +266,98 @@ export function overlapRanges(spans: { start: number; end: number }[]): { start:
     }
   }
   return out
+}
+
+function gcd(a: number, b: number) {
+  let x = Math.abs(a)
+  let y = Math.abs(b)
+  while (y) { const t = y; y = x % y; x = t }
+  return x || 1
+}
+
+function ruCount(n: number, one: string, few: string, many: string) {
+  const n10 = n % 10
+  const n100 = n % 100
+  const word = n10 === 1 && n100 !== 11 ? one : n10 >= 2 && n10 <= 4 && (n100 < 10 || n100 >= 20) ? few : many
+  return `${n} ${word}`
+}
+
+export interface PatternInfo {
+  line: string
+  regular: boolean
+  onPeriods: number
+  offPeriods: number
+  parallel: number
+  people: number
+}
+
+/** Одна строка о фактическом ритме. Совпадает с layerOnCall и меняется вместе с parallel. */
+export function describePattern(l: Pick<Layer, 'participants' | 'parallel' | 'rotation'>, nameOf?: (id: string) => string): PatternInfo {
+  const people = l.participants.length
+  const parallel = Math.max(1, l.parallel)
+  if (!people) {
+    return { line: 'Отметьте участников — от их числа зависит, сколько длится отдых.', regular: false, onPeriods: 0, offPeriods: 0, parallel, people: 0 }
+  }
+  const k = Math.min(parallel, people)
+  const cycle = people / gcd(k, people)
+  const onAt: boolean[] = []
+  for (let idx = 0; idx < cycle; idx++) {
+    let on = false
+    for (let i = 0; i < k; i++) if ((idx * k + i) % people === 0) on = true
+    onAt.push(on)
+  }
+  const first = onAt.indexOf(true)
+  let onPeriods = 0
+  let offPeriods = 0
+  if (first >= 0) {
+    let i = first
+    while (onAt[i % cycle] && onPeriods < cycle) { onPeriods++; i++ }
+    while (!onAt[i % cycle] && offPeriods < cycle) { offPeriods++; i++ }
+  }
+  const regular = onPeriods > 0 && onPeriods + offPeriods === cycle
+  const spell = (periods: number) => l.rotation.unit === 'day'
+    ? ruCount(periods * l.rotation.count, 'сутки', 'суток', 'суток')
+    : ruCount(periods * l.rotation.count, 'неделю', 'недели', 'недель')
+  const firstIds: string[] = []
+  for (let i = 0; i < k; i++) firstIds.push(l.participants[i % people])
+  const who = nameOf ? firstIds.map((id) => nameOf(id).split(' ')[0]).join(' и ') : ''
+  let line: string
+  if (regular && offPeriods === 0) line = `Одновременно ${k}: очередь из ${people} дежурит без перерыва${who ? `, сейчас ${who}` : ''}.`
+  else if (regular) line = `Одновременно ${k}: каждый дежурит ${spell(onPeriods)}, затем отдыхает ${spell(offPeriods)}${who ? `. Сначала ${who}` : ''}.`
+  else line = `Одновременно ${k} из ${people}, смена ${spell(1)}: отдых в очереди получается разным${who ? `. Сначала ${who}` : ''}.`
+  return { line, regular, onPeriods, offPeriods, parallel: k, people }
+}
+
+function handoffOn(dayStart: number, handoff: string) {
+  const d = new Date(dayStart)
+  const m = hm(handoff)
+  d.setHours(Math.floor(m / 60), m % 60, 0, 0)
+  return d.getTime()
+}
+
+/** Целые сутки от времени передачи смены. Прошедший интервал помечается past, частично прошедший сдвигается вперёд. */
+export function snapDuty(a: number, b: number, handoff: string, now = Date.now()) {
+  const s = Math.min(a, b)
+  const e = Math.max(a, b)
+  let start = handoffOn(startOfDay(s).getTime(), handoff)
+  if (s < start) start -= DAY
+  let end = handoffOn(startOfDay(e).getTime(), handoff)
+  if (e > end) end += DAY
+  if (end <= start) end = start + DAY
+  if (end <= now) return { start, end, past: true, shifted: false }
+  let shifted = false
+  if (start < now) {
+    let next = handoffOn(startOfDay(now).getTime(), handoff)
+    if (next < now) next += DAY
+    if (next >= end) end = next + DAY
+    start = next
+    shifted = true
+  }
+  return { start, end, past: false, shifted }
+}
+
+export function calendarHandoff(layers: { handoffTime: string }[]) {
+  return layers[0]?.handoffTime || '10:00'
 }
 
 export type SnapMode = 'hour' | 'day'

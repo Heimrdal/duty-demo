@@ -9,12 +9,13 @@ export const TYPE_META: Record<CalendarType, { label: string; color: string; bg:
   product: { label: 'Продукт', color: '#5e6ad2', bg: '#e0e7ff', icon: '' },
   infra: { label: 'Инфраструктура', color: '#8b5cf6', bg: '#ede9fe', icon: '' },
 }
-export const KIND_META: Record<LayerKind | 'override', { label: string; color: string; bg: string; pattern?: boolean }> = {
+export const KIND_META: Record<LayerKind | 'override' | 'oneoff', { label: string; color: string; bg: string; pattern?: boolean }> = {
   primary: { label: 'Основной', color: '#0f766e', bg: '#ccfbf1' },
   secondary: { label: 'Резерв', color: '#64748b', bg: '#e2e8f0' },
   business: { label: 'Рабочие часы', color: '#0369a1', bg: '#e0f2fe' },
   night: { label: 'Ночь и выходные', color: '#4f46e5', bg: '#e0e7ff' },
   shadow: { label: 'Стажёр', color: '#a16207', bg: '#fef9c3' },
+  oneoff: { label: 'Разовое', color: '#be185d', bg: '#fce7f3' },
   override: { label: 'Подмена', color: '#be185d', bg: '#fce7f3', pattern: true },
 }
 export const ESC_LABEL: Record<EscStep['target'], string> = {
@@ -35,6 +36,15 @@ export function personColor(id: string) {
   return PALETTE[h % PALETTE.length]
 }
 export const initials = (n: string) => n.split(' ').map((x) => x[0]).slice(0, 2).join('')
+
+/** «Имя Фамилия» → «И. Фамилия». Полное имя остаётся в подсказке. */
+export function shortName(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean)
+  if (parts.length < 2) return name
+  const surname = parts[parts.length - 1]
+  const ini = parts.slice(0, -1).map((p) => `${p[0]}.`).join('')
+  return `${ini} ${surname}`
+}
 export const teamHref = (team: string) => `#/teams/${encodeURIComponent(team)}`
 
 export function Avatar({ p, size = 28 }: { p?: Person; size?: number }) {
@@ -77,6 +87,13 @@ export function Btn({ children, onClick, variant = 'primary', className = '', ty
 }
 
 export function Modal({ title, children, onClose, wide }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
+  const closeRef = useRef(onClose)
+  useEffect(() => { closeRef.current = onClose })
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') closeRef.current() }
+    window.addEventListener('keydown', key)
+    return () => window.removeEventListener('keydown', key)
+  }, [])
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 pt-16" onMouseDown={onClose}>
       <div className={`popover-in w-full ${wide ? 'max-w-3xl' : 'max-w-lg'} rounded-2xl border border-line bg-surface shadow-card`} onMouseDown={(e) => e.stopPropagation()}>
@@ -136,6 +153,39 @@ export function Menu({ label = 'Ещё', items }: { label?: string; items: { lab
   )
 }
 
+/** Одна и та же легенда таймлайна: цвет человека, штриховка только у подмены. */
+export function ScheduleLegend() {
+  return (
+    <div data-testid="schedule-legend" className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-muted">
+      <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-4 rounded-sm" style={{ background: '#2563eb' }} />цвет — человек</span>
+      <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-4 rounded-sm" style={{ background: '#2563eb', backgroundImage: 'repeating-linear-gradient(45deg, rgba(255,255,255,.7) 0 2px, transparent 2px 4px)' }} />штриховка — подмена</span>
+      <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-4 rounded-sm" style={{ outline: '2px solid var(--c-warn)' }} />оранжевый контур — две смены одного человека сразу</span>
+      <span className="inline-flex items-center gap-1.5"><span className="gap-band h-2.5 w-4 rounded-sm" />розовое «Нет дежурного» — в этот час никто не назначен</span>
+    </div>
+  )
+}
+
+export function LeadSelect({ people, teamFirst, value, onChange, allowEmpty = true, testId }: {
+  people: Person[]
+  teamFirst: string[]
+  value: string
+  onChange: (id: string) => void
+  allowEmpty?: boolean
+  testId?: string
+}) {
+  const prefer = new Set(teamFirst)
+  const head = people.filter((p) => prefer.has(p.id))
+  const rest = people.filter((p) => !prefer.has(p.id))
+  const opt = (p: Person) => <option key={p.id} value={p.id}>{p.name} — {p.title}</option>
+  return (
+    <select data-testid={testId} className={inputCls} value={value} onChange={(e) => onChange(e.target.value)}>
+      {allowEmpty && <option value="">Выберите</option>}
+      {head.length > 0 && <optgroup label="Сначала команда">{head.map(opt)}</optgroup>}
+      {rest.length > 0 && <optgroup label={head.length ? 'Остальные сотрудники' : 'Сотрудники'}>{rest.map(opt)}</optgroup>}
+    </select>
+  )
+}
+
 export function Legend() {
   return (
     <div className="space-y-3 text-sm">
@@ -170,12 +220,23 @@ export function resolveChain(c: Calendar, people: Person[], t: number): ChainLev
       ps = l ? (nextInRotation(l, t).map(byId).filter(Boolean) as Person[]) : []
       note = l ? `из слоя «${l.name}»` : undefined
     }
-    if (s.target === 'lead') ps = [byId(c.leadId)!].filter(Boolean)
+    if (s.target === 'lead') {
+      ps = [byId(c.leadId)!].filter(Boolean)
+      note = `лид календаря «${c.name}»`
+    }
     if (s.target === 'manager') {
-      const m = new Map<string, Person>()
-      onCall.forEach((p) => { const mg = managerOf(people, p.id); if (mg) m.set(mg.id, mg) })
-      ps = [...m.values()]
-      note = 'руководители текущих дежурных'
+      const pairs: { person: Person; manager: Person }[] = []
+      const seen = new Set<string>()
+      for (const p of onCall) {
+        const mg = managerOf(people, p.id)
+        if (!mg || seen.has(mg.id)) continue
+        seen.add(mg.id)
+        pairs.push({ person: p, manager: mg })
+      }
+      ps = pairs.map((p) => p.manager)
+      note = pairs.length
+        ? pairs.map((p) => `руководитель ${p.person.name}`).join(', ')
+        : 'нет дежурного — руководитель не берётся из другого календаря'
     }
     if (s.target === 'person' && s.personId) ps = [byId(s.personId)!].filter(Boolean)
     if (s.target === 'sitcenter') { ps = [byId('u-sc-mgr')!].filter(Boolean); note = 'и звонок в дежурную смену СЦ' }
@@ -191,8 +252,9 @@ export function EscalationChain({ c, people, t, compact }: { c: Calendar; people
         {chain.map((lv, i) => (
           <span key={i} className="inline-flex items-center gap-2">
             {i > 0 && <span className="text-faint">→</span>}
-            <span title={lv.label}>
-              {lv.people.length ? lv.people.map((p) => p.name.split(' ')[0]).join(', ') : '—'}
+            <span title={lv.note ? `${lv.label}. ${lv.note}` : lv.label}>
+              <span className="text-faint">{lv.label}: </span>
+              {lv.people.length ? lv.people.map((p) => shortName(p.name)).join(', ') : '—'}
               {lv.delayMin > 0 && <span className="text-faint"> +{lv.delayMin} мин</span>}
             </span>
           </span>

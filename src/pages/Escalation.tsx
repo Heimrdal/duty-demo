@@ -1,19 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
-import { fmtT } from '../engine'
+import { calendarOnCall, fmtT } from '../engine'
 import { useNow, useStore } from '../store'
-import { Btn, Card, EscalationChain, inputCls, resolveChain } from '../ui'
+import { Btn, Card, EscalationChain, inputCls, resolveChain, shortName } from '../ui'
 
 interface Ev { t: number; text: string; level?: number; kind: 'page' | 'wait' | 'ack' | 'end' }
+
+function incidentFor(name: string, product: string) {
+  return `«${name}»: нет ответа сервиса «${product}»`
+}
 
 export function Escalation() {
   const { state, sendTg } = useStore()
   const now = useNow()
-  const [calId, setCalId] = useState(state.calendars[0]?.id)
-  const [title, setTitle] = useState('Недоступен /api/payments: 5xx > 20%')
+  const newestId = state.calendars[state.calendars.length - 1]?.id
+  const [calId, setCalId] = useState(newestId)
+  const [customTitle, setCustomTitle] = useState<string | null>(null)
   const [events, setEvents] = useState<Ev[]>([])
   const [running, setRunning] = useState(false)
   const timer = useRef<number | null>(null)
-  const c = state.calendars.find((x) => x.id === calId)!
+  const c = (state.calendars.find((x) => x.id === calId) ?? state.calendars[state.calendars.length - 1])!
+  const title = customTitle ?? (c ? incidentFor(c.name, c.product) : '')
   const stop = () => { if (timer.current) clearTimeout(timer.current); timer.current = null; setRunning(false) }
   useEffect(() => () => stop(), [])
 
@@ -47,8 +53,8 @@ export function Escalation() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card className="space-y-4 p-5">
           <h3 className="font-medium">Симуляция инцидента</h3>
-          <select className={inputCls} value={calId} onChange={(e) => { setCalId(e.target.value); stop(); setEvents([]) }}>{state.calendars.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select>
-          <input className={inputCls} value={title} onChange={(e) => setTitle(e.target.value)} />
+          <select className={inputCls} value={c?.id ?? ''} onChange={(e) => { setCalId(e.target.value); setCustomTitle(null); stop(); setEvents([]) }}>{[...state.calendars].reverse().map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select>
+          <input className={inputCls} value={title} onChange={(e) => setCustomTitle(e.target.value)} aria-label="Текст инцидента" />
           <div className="flex gap-2"><Btn onClick={run}>Запустить</Btn><Btn variant="ghost" onClick={ack} disabled={!running}>Подтвердить</Btn></div>
           <p className="text-xs text-muted">Время ускорено. Сообщения появятся в уведомлениях.</p>
           <div className="space-y-2">
@@ -67,12 +73,20 @@ export function Escalation() {
       <div>
         <h3 className="mb-2 font-medium">Все календари</h3>
         <div className="divide-y divide-line">
-          {state.calendars.map((x) => (
-            <div key={x.id} className="flex flex-wrap items-center gap-x-6 gap-y-2 py-3">
-              <a href={`#/calendars/${x.id}`} className="w-48 text-sm font-medium hover:text-accent">{x.name}</a>
-              <div className="min-w-0 flex-1"><EscalationChain c={x} people={state.people} t={now} compact /></div>
-            </div>
-          ))}
+          {state.calendars.map((x) => {
+            const on = calendarOnCall(x, now).map((e) => state.people.find((p) => p.id === e.personId)).filter((p) => !!p)
+            const lead = state.people.find((p) => p.id === x.leadId)
+            return (
+              <div key={x.id} className="flex flex-wrap items-center gap-x-6 gap-y-2 py-3">
+                <a href={`#/calendars/${x.id}`} className="w-48 text-sm font-medium hover:text-accent">{x.name}</a>
+                <div className="min-w-0 flex-1 text-sm">
+                  <span className="text-muted">Сейчас: </span>
+                  {on.length ? on.map((p) => shortName(p.name)).join(', ') : 'никого'}
+                  {lead && <span className="text-faint"> · лид {shortName(lead.name)}</span>}
+                </div>
+              </div>
+            )
+          })}
         </div>
       </div>
     </div>

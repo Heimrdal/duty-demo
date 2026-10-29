@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { calendarOnCall, DAY, fmtDT, fmtDur, HOUR, nextHandoff, sampleSegments } from '../engine'
+import { calendarOnCall, DAY, fmtDT, fmtDur, HOUR, nextHandoff, sampleSegments, teamCoverage } from '../engine'
 import { TakeDutyModal } from '../forms'
 import { useNow, useStore } from '../store'
 import { Avatar, Card, EscalationChain, TYPE_META } from '../ui'
@@ -17,6 +17,7 @@ export function Dashboard() {
   const rows = state.calendars.filter((c) => filter === 'all' || c.type === filter).map((c) => ({ c, entries: calendarOnCall(c, now) }))
   const totalOnCall = new Set(state.calendars.flatMap((c) => calendarOnCall(c, now).map((e) => e.personId))).size
   const gaps = state.calendars.filter((c) => calendarOnCall(c, now).length === 0)
+  const weekGaps = useMemo(() => state.calendars.filter((c) => teamCoverage([c], now, now + 7 * DAY).some((s) => s.gap)), [state.calendars, Math.floor(now / HOUR)]) // eslint-disable-line
 
   const mine = useMemo(() => state.calendars.flatMap((c) =>
     sampleSegments(Math.floor((now - DAY) / HOUR) * HOUR, now + 21 * DAY, (t) => (calendarOnCall(c, t).some((e) => e.personId === me.id) ? me.id : null), HOUR)
@@ -32,7 +33,7 @@ export function Dashboard() {
       <div className="grid grid-cols-2 gap-8 md:grid-cols-4">
         <Stat k="Календари" v={String(state.calendars.length)} />
         <Stat k="Сейчас на смене" v={String(totalOnCall)} />
-        <Stat k="Без покрытия" v={String(gaps.length)} danger={gaps.length > 0} hint={gaps.map((g) => g.name).join(', ')} />
+        <Stat k="Сейчас без покрытия" v={String(gaps.length)} danger={gaps.length > 0} wrap hint={gaps.length ? `прямо сейчас: ${gaps.map((g) => g.name).join(', ')}` : weekGaps.length ? `сейчас все на смене · за 7 дней дыры: ${weekGaps.map((c) => c.name).join(', ')}` : 'прямо сейчас и на 7 дней вперёд дыр нет'} />
         <Stat k="Моя смена" v={mine[0] ? (mine[0].start <= now ? 'Сейчас' : fmtDT(mine[0].start)) : 'Нет'} hint={mine[0]?.c.name} />
       </div>
 
@@ -109,12 +110,12 @@ export function Dashboard() {
   )
 }
 
-function Stat({ k, v, hint, danger }: { k: string; v: string; hint?: string; danger?: boolean }) {
+function Stat({ k, v, hint, danger, wrap }: { k: string; v: string; hint?: string; danger?: boolean; wrap?: boolean }) {
   return (
     <div>
       <div className="text-xs text-muted">{k}</div>
       <div className={`mt-1 text-2xl font-semibold tracking-tight ${danger ? 'text-danger' : ''}`}>{v}</div>
-      {hint && <div className="mt-0.5 truncate text-xs text-faint">{hint}</div>}
+      {hint && <div className={`mt-0.5 text-xs text-faint ${wrap ? 'leading-snug' : 'truncate'}`}>{hint}</div>}
     </div>
   )
 }

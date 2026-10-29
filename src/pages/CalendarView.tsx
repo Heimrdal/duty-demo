@@ -3,20 +3,31 @@ import { addDays, fmtDT, fmtDur, layerOnCall, rotationLabel, startOfDay, uid } f
 import { LayerWizard, TakeDutyModal } from '../forms'
 import { useNow, useStore } from '../store'
 import { MonthGrid, Timeline } from '../Timeline'
-import { Btn, Card, Empty, ESC_LABEL, EscalationChain, Field, inputCls, KindMark, Menu, teamHref, TYPE_META } from '../ui'
+import { Btn, Card, Empty, ESC_LABEL, EscalationChain, Field, inputCls, KindMark, LeadSelect, Menu, ScheduleLegend, teamHref, TYPE_META } from '../ui'
 import type { Calendar, CalendarType, EscTarget, Layer } from '../types'
 
 const TABS = [['schedule', 'Расписание'], ['layers', 'Слои'], ['escalation', 'Эскалация'], ['shifts', 'Дежурства'], ['settings', 'Настройки']] as const
 type Tab = (typeof TABS)[number][0]
 
+function wantsRotation(id: string) {
+  try { return sessionStorage.getItem('oncall-open-rotation') === id } catch { return false }
+}
+
 export function CalendarView({ id }: { id: string }) {
   const { state } = useStore()
   const c = state.calendars.find((x) => x.id === id)
-  const [tab, setTab] = useState<Tab>('schedule')
+  const [tab, setTab] = useState<Tab>(() => (wantsRotation(id) ? 'layers' : 'schedule'))
   const [take, setTake] = useState(false)
+  const [draft, setDraft] = useState<Layer | 'new' | null>(() => (wantsRotation(id) ? 'new' : null))
   if (!c) return <Empty title="Календарь не найден" action={<a className="text-sm text-accent" href="#/calendars">К списку</a>} />
   const owner = state.people.find((p) => p.id === c.ownerId)
   const lead = state.people.find((p) => p.id === c.leadId)
+  const closeDraft = () => {
+    setDraft(null)
+    try {
+      if (sessionStorage.getItem('oncall-open-rotation') === id) sessionStorage.removeItem('oncall-open-rotation')
+    } catch { /* ignore */ }
+  }
   return (
     <div className="space-y-6">
       <header>
@@ -25,23 +36,32 @@ export function CalendarView({ id }: { id: string }) {
           <div>
             <h1 className="text-2xl font-semibold">{c.name}</h1>
             <p className="mt-2 text-sm text-muted">
-              {c.product} · <a className="hover:text-ink" href={teamHref(c.team)}>{c.team}</a>
-              {' · '}лид {lead?.name} · {owner?.name}
+              {c.product} · {c.team}
+              {' · '}лид {lead?.name ?? 'не назначен'} · {owner?.name}
               {' · '}{c.layerMode === 'parallel' ? 'слои параллельно' : 'слои по приоритету'}
             </p>
+            <a href={teamHref(c.team)} className="mt-2 inline-block text-sm font-medium text-accent">Таймлайн команды</a>
           </div>
           <Btn onClick={() => setTake(true)}>Взять дежурство</Btn>
         </div>
       </header>
+      {c.layers.length === 0 && (
+        <div data-testid="setup-banner" className="rounded-xl border border-accent/30 bg-accent-soft px-4 py-3">
+          <div className="text-sm font-medium">Следующий шаг — добавить ротацию</div>
+          <p className="mt-1 max-w-xl text-sm text-muted">Календарь «{c.name}» пока пустой. Откройте мастер, выберите шаблон и отметьте, сколько человек дежурят одновременно.</p>
+          <Btn className="mt-3" onClick={() => { setTab('layers'); setDraft('new') }}>Добавить ротацию</Btn>
+        </div>
+      )}
       <div className="flex gap-5 border-b border-line text-sm">
         {TABS.map(([k, label]) => <button key={k} onClick={() => setTab(k)} className={`-mb-px border-b pb-2 ${tab === k ? 'border-ink font-medium text-ink' : 'border-transparent text-muted hover:text-ink'}`}>{label}</button>)}
       </div>
       {tab === 'schedule' && <ScheduleTab c={c} />}
-      {tab === 'layers' && <LayersTab c={c} />}
+      {tab === 'layers' && <LayersTab c={c} onAdd={() => setDraft('new')} onEdit={setDraft} />}
       {tab === 'escalation' && <EscalationTab c={c} />}
       {tab === 'shifts' && <ShiftsTab c={c} onTake={() => setTake(true)} />}
       {tab === 'settings' && <SettingsTab c={c} />}
       {take && <TakeDutyModal calendarId={c.id} onClose={() => setTake(false)} />}
+      {draft && <LayerWizard c={c} layer={draft === 'new' ? undefined : draft} onClose={closeDraft} />}
     </div>
   )
 }
@@ -71,16 +91,15 @@ function ScheduleTab({ c }: { c: Calendar }) {
       <Card className="overflow-hidden p-2">
         {view === 'month' ? <MonthGrid c={c} month={month} now={now} /> : <Timeline c={c} from={from} days={days} now={now} />}
       </Card>
-      <p className="text-xs text-muted">Цвет полосы — человек. Штриховка — подмена. Линия — текущее время.</p>
-      {c.layers.length === 0 && <p className="text-sm text-muted">Слоёв пока нет. Добавьте первый на вкладке «Слои».</p>}
+      <ScheduleLegend />
+      <p className="text-xs text-faint">Линия — текущее время. Розовые интервалы на шкале — дыры во всём окне, счётчик на главной считает только текущий момент.</p>
     </div>
   )
 }
 
-function LayersTab({ c }: { c: Calendar }) {
+function LayersTab({ c, onAdd, onEdit }: { c: Calendar; onAdd: () => void; onEdit: (l: Layer) => void }) {
   const { state, updateCalendar, toast } = useStore()
   const now = useNow()
-  const [edit, setEdit] = useState<Layer | 'new' | null>(null)
   const move = (i: number, d: number) => updateCalendar(c.id, (cal) => { const a = [...cal.layers]; const j = i + d; if (j < 0 || j >= a.length) return cal; [a[i], a[j]] = [a[j], a[i]]; return { ...cal, layers: a } })
   const del = (l: Layer) => { if (confirm(`Удалить слой «${l.name}»?`)) { updateCalendar(c.id, (cal) => ({ ...cal, layers: cal.layers.filter((x) => x.id !== l.id) })); toast('Слой удалён') } }
   const restr = (l: Layer) => l.restriction.type === 'none' ? 'круглосуточно' : l.restriction.type === 'daily' ? `${l.restriction.from}–${l.restriction.to}` : `${l.restriction.days.map((d) => ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'][d]).join(' ')}`
@@ -88,7 +107,7 @@ function LayersTab({ c }: { c: Calendar }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-4">
         <p className="text-sm text-muted">{c.layerMode === 'parallel' ? 'Все слои дежурят сразу.' : 'Алерт получает верхний слой, где кто-то есть.'}</p>
-        <Btn onClick={() => setEdit('new')}>Добавить слой</Btn>
+        <Btn onClick={onAdd}>Добавить ротацию</Btn>
       </div>
       {c.layers.length === 0 && <Empty title="Слоёв пока нет" text="Шаблон в мастере заполнит ротацию за один клик." />}
       {c.layers.map((l, i) => {
@@ -101,7 +120,7 @@ function LayersTab({ c }: { c: Calendar }) {
                 <p className="mt-1 text-sm text-muted">{rotationLabel(l)} · передача {l.handoffTime} · {Math.min(l.parallel, l.participants.length)} одновременно · {restr(l)}</p>
               </div>
               <div className="flex items-center gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
-                <button className="px-2 text-sm text-muted hover:text-ink" onClick={() => setEdit(l)}>Изменить</button>
+                <button className="px-2 text-sm text-muted hover:text-ink" onClick={() => onEdit(l)}>Изменить</button>
                 <Menu items={[
                   { label: 'Выше', onClick: () => move(i, -1), disabled: i === 0 },
                   { label: 'Ниже', onClick: () => move(i, 1), disabled: i === c.layers.length - 1 },
@@ -119,7 +138,6 @@ function LayersTab({ c }: { c: Calendar }) {
           </div>
         )
       })}
-      {edit && <LayerWizard c={c} layer={edit === 'new' ? undefined : edit} onClose={() => setEdit(null)} />}
     </div>
   )
 }
@@ -170,13 +188,13 @@ function ShiftsTab({ c, onTake }: { c: Calendar; onTake: () => void }) {
   const list = [...c.shifts].sort((a, b) => +new Date(a.start) - +new Date(b.start))
   return (
     <div>
-      <div className="mb-4 flex items-center justify-between"><h3 className="font-medium">Взятые дежурства и подмены</h3><Btn onClick={onTake}>Взять дежурство</Btn></div>
+      <div className="mb-4 flex items-center justify-between"><h3 className="font-medium">Разовые дежурства и подмены</h3><Btn onClick={onTake}>Взять дежурство</Btn></div>
       {list.length === 0 && <Empty title="Пока пусто" text="Запишитесь сами — из кнопки выше или с таймлайна команды." />}
       <div className="divide-y divide-line">
         {list.map((s) => (
           <div key={s.id} className="group flex flex-wrap items-baseline gap-x-3 gap-y-1 py-3 text-sm">
             <span className="font-medium">{byId(s.personId)?.name}</span>
-            <KindMark k="override" />
+            <KindMark k={s.replacesPersonId ? 'override' : 'oneoff'} />
             {s.replacesPersonId && <span className="text-muted">вместо {byId(s.replacesPersonId)?.name}</span>}
             <span className="text-muted">{fmtDT(s.start)} — {fmtDT(s.end)}</span>
             <span className="text-faint">{fmtDur(+new Date(s.end) - +new Date(s.start))}</span>
@@ -201,7 +219,7 @@ function SettingsTab({ c }: { c: Calendar }) {
         <Field label="Тип"><select className={inputCls} value={c.type} onChange={(e) => set({ type: e.target.value as CalendarType })}>{(Object.keys(TYPE_META) as CalendarType[]).map((t) => <option key={t} value={t}>{TYPE_META[t].label}</option>)}</select></Field>
       </div>
       <div className="space-y-4">
-        <Field label="Лид группы"><select className={inputCls} value={c.leadId} onChange={(e) => set({ leadId: e.target.value })}>{state.people.map((p) => <option key={p.id} value={p.id}>{p.name} — {p.title}</option>)}</select></Field>
+        <Field label="Лид группы"><LeadSelect allowEmpty={false} people={state.people} teamFirst={state.people.filter((p) => p.team === c.team).map((p) => p.id)} value={c.leadId} onChange={(leadId) => set({ leadId })} /></Field>
         <Field label="Сочетание слоёв"><select className={inputCls} value={c.layerMode} onChange={(e) => set({ layerMode: e.target.value as Calendar['layerMode'] })}><option value="parallel">Параллельно</option><option value="priority">По приоритету</option></select></Field>
         <Field label="Часовой пояс"><input className={inputCls} value="Europe/Moscow (МСК)" disabled /></Field>
         <Btn variant="danger" onClick={() => { if (confirm(`Удалить календарь «${c.name}»?`)) { update((s) => ({ ...s, calendars: s.calendars.filter((x) => x.id !== c.id) })); toast('Календарь удалён'); location.hash = '#/calendars' } }}>Удалить календарь</Btn>
