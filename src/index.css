@@ -1,0 +1,5 @@
+@import "tailwindcss";
+html, body, #root { height: 100%; }
+body { font-family: Inter, "Segoe UI", Roboto, Arial, sans-serif; background: #f4f6fb; color: #0f172a; }
+.scroll-thin::-webkit-scrollbar { height: 8px; width: 8px; }
+.scroll-thin::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }

@@ -1,0 +1,65 @@
+import { chromium } from 'playwright-core'
+const base = process.argv[2] || 'http://localhost:4173/'
+const shots = process.argv[3] !== 'noshots'
+const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', args: ['--no-sandbox'] })
+const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, locale: 'ru-RU', timezoneId: 'Europe/Moscow' })
+const errors = []
+page.on('pageerror', (e) => errors.push('pageerror: ' + e.message))
+page.on('console', (m) => m.type() === 'error' && errors.push('console: ' + m.text()))
+page.on('dialog', (d) => d.accept())
+await page.goto(base)
+await page.getByText('Войти через корпоративный SSO').click()
+await page.getByText('Дмитрий Соколов').click()
+await page.getByText('Кто дежурит сейчас').first().waitFor()
+await page.waitForTimeout(300)
+if (shots) await page.screenshot({ path: 'screenshots/01-dashboard.png', fullPage: true })
+// календарь Интернет-банк
+await page.goto(base + '#/calendars/cal-ib')
+await page.getByText('ИТОГ: кому придёт алерт').waitFor()
+if (shots) await page.screenshot({ path: 'screenshots/02-calendar-timeline.png', fullPage: true })
+// мастер слоя
+await page.getByText('🧱 Слои и ротации').click()
+await page.getByText('＋ Добавить слой').click()
+await page.getByPlaceholder('Например: Основная ротация разработки').fill('Ночные релизы')
+await page.getByText('Далее →').click()
+await page.getByRole('button', { name: '2 недели', exact: true }).click()
+await page.getByText('Далее →').click()
+await page.locator('.fixed label', { hasText: 'Никита Попов' }).click()
+await page.locator('.fixed button', { hasText: /^2$/ }).click()
+await page.getByText('Далее →').click(); await page.getByText('Далее →').click()
+if (shots) await page.screenshot({ path: 'screenshots/03-layer-wizard.png' })
+await page.getByText('💾 Сохранить слой').click()
+await page.getByText('Ночные релизы').first().waitFor()
+// взять дежурство
+await page.getByText('✋ Взять дежурство здесь').click()
+await page.getByText('Ближайшие выходные').click()
+await page.locator('.fixed button', { hasText: '✋ Взять дежурство' }).last().click()
+await page.getByText('добавлено').waitFor()
+// создать календарь
+await page.goto(base + '#/calendars')
+await page.getByText('＋ Новый календарь').click()
+await page.getByPlaceholder('Например: Кредитный конвейер').fill('Кредитный конвейер')
+await page.getByRole('button', { name: 'Создать' }).click()
+await page.getByText('ИТОГ: кому придёт алерт').waitFor()
+// эскалация
+await page.goto(base + '#/escalation')
+await page.getByText('🚨 Запустить').click()
+await page.waitForTimeout(3000)
+await page.getByText('✅ Подтвердить (ack)').click()
+await page.getByText('эскалация остановлена').waitFor()
+if (shots) await page.screenshot({ path: 'screenshots/04-escalation.png', fullPage: true })
+// telegram
+await page.goto(base + '#/notifications')
+await page.getByText('✈️ Отправить тест').click()
+await page.getByText('Тестовое уведомление').first().waitFor()
+if (shots) await page.screenshot({ path: 'screenshots/05-telegram.png', fullPage: true })
+// month view
+await page.goto(base + '#/calendars/cal-pay')
+await page.getByRole('button', { name: 'Месяц' }).click(); await page.waitForTimeout(3600)
+if (shots) await page.screenshot({ path: 'screenshots/06-calendar-month.png', fullPage: true })
+// logout -> login screenshot
+await page.getByText('Выйти').click()
+await page.getByText('Войти через корпоративный SSO').click()
+if (shots) await page.screenshot({ path: 'screenshots/00-sso-login.png' })
+console.log(errors.length ? 'ERRORS:\n' + errors.join('\n') : 'SMOKE OK, no console errors')
+await browser.close()
