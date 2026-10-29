@@ -1,45 +1,77 @@
 import { useState } from 'react'
 import { calendarOnCall, isoDate, uid } from '../engine'
 import { useNow, useStore } from '../store'
-import { Avatar, Btn, Card, Field, inputCls, Legend, Modal, TYPE_META, TypeBadge } from '../ui'
+import { Avatar, Btn, Card, Empty, Field, inputCls, Modal, teamHref, TYPE_META } from '../ui'
 import type { Calendar, CalendarType } from '../types'
 
 export function Calendars() {
   const { state } = useStore()
   const now = useNow()
   const [create, setCreate] = useState(false)
+  const [mode, setMode] = useState<'calendars' | 'teams'>('calendars')
   const [q, setQ] = useState('')
   const byId = (id: string) => state.people.find((p) => p.id === id)
   const list = state.calendars.filter((c) => (c.name + c.product + c.team).toLowerCase().includes(q.toLowerCase()))
+  const teams = [...new Set(state.calendars.map((c) => c.team))]
+
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div><h1 className="text-2xl font-bold">Календари дежурств</h1><p className="text-sm text-slate-500">Один календарь = один продукт или функционал. Внутри — слои ротаций.</p></div>
-        <div className="flex gap-2"><input className={`${inputCls} w-64`} placeholder="Поиск по названию, продукту, команде" value={q} onChange={(e) => setQ(e.target.value)} /><Btn onClick={() => setCreate(true)}>＋ Новый календарь</Btn></div>
+    <div className="space-y-8">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold">{mode === 'calendars' ? 'Календари' : 'Команды'}</h1>
+          <p className="mt-1 text-sm text-muted">{mode === 'calendars' ? 'Один календарь — один продукт. Внутри слои ротации.' : 'Таймлайн команды: люди, смены и покрытие.'}</p>
+        </div>
+        {mode === 'calendars' && <Btn onClick={() => setCreate(true)}>Новый календарь</Btn>}
+      </header>
+
+      <div className="flex gap-5 text-sm">
+        <button className={mode === 'calendars' ? 'font-medium text-ink' : 'text-muted hover:text-ink'} onClick={() => setMode('calendars')}>Календари</button>
+        <button className={mode === 'teams' ? 'font-medium text-ink' : 'text-muted hover:text-ink'} onClick={() => setMode('teams')}>Команды</button>
       </div>
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {list.map((c) => {
-          const on = calendarOnCall(c, now)
-          const peopleCount = new Set(c.layers.flatMap((l) => l.participants)).size
-          return (
-            <a key={c.id} href={`#/calendars/${c.id}`} className="block">
-              <Card className="h-full p-4 transition hover:-translate-y-0.5 hover:shadow-md" >
-                <div className="mb-2 h-1.5 rounded-full" style={{ background: TYPE_META[c.type].color }} />
-                <div className="flex items-start justify-between gap-2"><h3 className="text-lg font-semibold">{c.name}</h3><TypeBadge t={c.type} /></div>
-                <p className="mt-1 line-clamp-2 text-sm text-slate-500">{c.description || c.product}</p>
-                <div className="mt-3 flex items-center gap-3 text-xs text-slate-500">
-                  <span>{c.layers.length} сл.</span><span>{peopleCount} чел.</span><span>{c.layerMode === 'parallel' ? 'слои параллельно' : 'слои по приоритету'}</span>
+
+      {mode === 'teams' ? (
+        <div className="divide-y divide-line">
+          {teams.map((t) => {
+            const members = state.people.filter((p) => p.team === t)
+            const lead = byId(state.calendars.find((c) => c.team === t)?.leadId ?? '')
+            return (
+              <a key={t} href={teamHref(t)} className="flex items-center justify-between gap-4 py-4 hover:bg-surface-2/60">
+                <div>
+                  <div className="font-medium">{t}</div>
+                  <div className="mt-0.5 text-sm text-muted">Лид {lead?.name ?? '—'} · {members.length} в составе</div>
                 </div>
-                <div className="mt-3 flex items-center justify-between">
-                  <div className="flex -space-x-2">{on.map((e) => <span key={e.personId} className="rounded-full ring-2 ring-white"><Avatar p={byId(e.personId)} size={28} /></span>)}{!on.length && <span className="text-xs text-red-500">никто не дежурит</span>}</div>
-                  <span className="text-xs text-slate-500">лид: {byId(c.leadId)?.name}</span>
-                </div>
-              </Card>
-            </a>
-          )
-        })}
-      </div>
-      <Legend />
+                <span className="text-sm text-faint">Открыть</span>
+              </a>
+            )
+          })}
+        </div>
+      ) : (
+        <>
+          <input className={`${inputCls} max-w-sm`} placeholder="Поиск по названию, продукту, команде" value={q} onChange={(e) => setQ(e.target.value)} />
+          {list.length === 0 ? <Empty title="Ничего не нашлось" text="Попробуйте другое название или создайте календарь." /> : (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              {list.map((c) => {
+                const on = calendarOnCall(c, now)
+                return (
+                  <a key={c.id} href={`#/calendars/${c.id}`} className="block">
+                    <Card className="h-full p-5 hover:border-line-strong">
+                      <div className="flex items-center gap-2">
+                        <span className="h-2 w-2 rounded-full" style={{ background: TYPE_META[c.type].color }} />
+                        <h3 className="font-medium">{c.name}</h3>
+                      </div>
+                      <p className="mt-2 line-clamp-2 text-sm text-muted">{c.description || c.product}</p>
+                      <div className="mt-4 flex items-center justify-between gap-3">
+                        <div className="flex -space-x-1.5">{on.slice(0, 5).map((e) => <span key={e.personId} className="rounded-full ring-2 ring-surface"><Avatar p={byId(e.personId)} size={26} /></span>)}{!on.length && <span className="text-xs text-danger">никто не дежурит</span>}</div>
+                        <span className="text-xs text-faint">{c.team}</span>
+                      </div>
+                    </Card>
+                  </a>
+                )
+              })}
+            </div>
+          )}
+        </>
+      )}
       {create && <CreateCalendar onClose={() => setCreate(false)} />}
     </div>
   )
@@ -67,25 +99,25 @@ function CreateCalendar({ onClose }: { onClose: () => void }) {
     location.hash = `#/calendars/${id}`
   }
   return (
-    <Modal title="Новый календарь дежурств" onClose={onClose}>
-      <div className="space-y-4">
-        <Field label="Название (по продукту / функционалу)" hint="Так календарь будет виден в «Кто дежурит сейчас» и в Telegram-уведомлениях"><input autoFocus className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="Например: Кредитный конвейер" /></Field>
-        <Field label="Продукт / описание"><input className={inputCls} value={product} onChange={(e) => setProduct(e.target.value)} placeholder="Сервисы скоринга и выдачи кредитов" /></Field>
+    <Modal title="Новый календарь" onClose={onClose}>
+      <div className="space-y-5">
+        <Field label="Название" hint="Так календарь виден на дашборде и в уведомлениях"><input autoFocus className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="Например: Кредитный конвейер" /></Field>
+        <Field label="Продукт"><input className={inputCls} value={product} onChange={(e) => setProduct(e.target.value)} placeholder="Сервисы скоринга и выдачи кредитов" /></Field>
         <Field label="Тип">
           <div className="grid grid-cols-2 gap-2">
             {(Object.keys(TYPE_META) as CalendarType[]).map((t) => (
-              <button key={t} onClick={() => setType(t)} className={`rounded-lg border p-2 text-left text-sm ${type === t ? 'ring-2' : 'border-slate-200'}`} style={{ borderColor: type === t ? TYPE_META[t].color : undefined, background: type === t ? TYPE_META[t].bg : undefined }}>{TYPE_META[t].icon} {TYPE_META[t].label}</button>
+              <button key={t} onClick={() => setType(t)} className={`rounded-lg border px-3 py-2 text-left text-sm ${type === t ? 'border-accent bg-accent-soft' : 'border-line'}`}>{TYPE_META[t].label}</button>
             ))}
           </div>
         </Field>
-        <Field label="Лид группы (кому звонить при эскалации)">
+        <Field label="Лид группы">
           <select className={inputCls} value={leadId} onChange={(e) => setLeadId(e.target.value)}>{state.people.map((p) => <option key={p.id} value={p.id}>{p.name} — {p.title}</option>)}</select>
         </Field>
-        <Field label="Как сочетаются слои" hint="OneUptime: верхний слой перекрывает нижние. Для параллельных дежурств выберите «параллельно».">
-          <select className={inputCls} value={mode} onChange={(e) => setMode(e.target.value as 'parallel' | 'priority')}><option value="parallel">Параллельно — дежурят все слои одновременно</option><option value="priority">По приоритету — алерт получает верхний слой (как в OneUptime)</option></select>
+        <Field label="Слои" hint="Параллельно — дежурят все слои. По приоритету верхний перекрывает нижние.">
+          <select className={inputCls} value={mode} onChange={(e) => setMode(e.target.value as 'parallel' | 'priority')}><option value="parallel">Параллельно</option><option value="priority">По приоритету</option></select>
         </Field>
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={addMe} onChange={(e) => setAddMe(e.target.checked)} /> Сразу создать недельную ротацию и добавить меня</label>
-        <div className="flex justify-end gap-2 border-t border-slate-100 pt-4"><Btn variant="ghost" onClick={onClose}>Отмена</Btn><Btn disabled={!name.trim()} onClick={submit}>Создать</Btn></div>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={addMe} onChange={(e) => setAddMe(e.target.checked)} /> Сразу добавить меня в недельную ротацию</label>
+        <div className="flex justify-end gap-2 pt-2"><Btn variant="ghost" onClick={onClose}>Отмена</Btn><Btn disabled={!name.trim()} onClick={submit}>Создать</Btn></div>
       </div>
     </Modal>
   )
