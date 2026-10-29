@@ -4,7 +4,7 @@
 Бэкенда нет: данные замоканы и хранятся в localStorage браузера. SSO и Telegram — имитация.
 
 ## Как открыть
-- GitHub Pages: https://heimrdal.github.io/duty-demo/
+- GitHub Pages: https://heimrdal.github.io/duty-demo/ (сайт появится после однократного включения Pages → GitHub Actions в настройках репозитория; у автоматизации нет права включить его самой)
 - Без сервера: двойной клик по `oncall-demo.html` (один самодостаточный файл).
 - Dev: `npm install && npm run dev`
 - Сборка: `npm run build` → `dist/`, `npm run preview` (порт 4173)
