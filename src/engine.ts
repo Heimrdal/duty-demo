@@ -185,3 +185,103 @@ export function rotationLabel(l: Layer) {
   if (unit === 'day') return count === 1 ? 'по суткам' : `по ${count} сут.`
   return count === 1 ? 'по неделе' : `по ${count} нед.`
 }
+
+export interface DutySpan {
+  start: number
+  end: number
+  personId: string
+  calendarId: string
+  calendarName: string
+  layerId: string | null
+  layerName: string
+  kind: string
+  replacedId?: string
+  note?: string
+}
+
+/** Смены человека по всем календарям: слои (с учётом подмен) и взятые дежурства. */
+export function personDutySpans(calendars: Calendar[], personId: string, from: number, to: number, step = HOUR): DutySpan[] {
+  const out: DutySpan[] = []
+  for (const c of calendars) {
+    const replacedAt = (t: number) => c.shifts.some((s) => s.replacesPersonId === personId && t >= +new Date(s.start) && t < +new Date(s.end))
+    for (const l of c.layers) {
+      if (!l.participants.includes(personId)) continue
+      for (const s of sampleSegments(from, to, (t) => (replacedAt(t) || !layerOnCall(l, t).includes(personId) ? null : personId), step)) {
+        out.push({ start: s.start, end: s.end, personId, calendarId: c.id, calendarName: c.name, layerId: l.id, layerName: l.name, kind: l.kind })
+      }
+    }
+    for (const s of c.shifts) {
+      if (s.personId !== personId) continue
+      const start = Math.max(from, +new Date(s.start))
+      const end = Math.min(to, +new Date(s.end))
+      if (end <= start) continue
+      out.push({
+        start, end, personId, calendarId: c.id, calendarName: c.name, layerId: null,
+        layerName: s.replacesPersonId ? 'Подмена' : 'Своё дежурство', kind: 'override', replacedId: s.replacesPersonId, note: s.note,
+      })
+    }
+  }
+  return out
+}
+
+export interface CoverSeg { start: number; end: number; gap: boolean; gapNames: string }
+
+/** Дыры: интервалы, где хотя бы в одном календаре команды никто не дежурит. */
+export function teamCoverage(calendars: Calendar[], from: number, to: number, step = HOUR): CoverSeg[] {
+  const out: CoverSeg[] = []
+  let cur: CoverSeg | null = null
+  for (let t = from; t < to; t += step) {
+    const names = calendars.filter((c) => calendarOnCall(c, t + 1).length === 0).map((c) => c.name)
+    const gap = names.length > 0
+    const gapNames = names.join(', ')
+    if (cur && cur.gap === gap && cur.gapNames === gapNames) cur.end = t + step
+    else {
+      if (cur) out.push(cur)
+      cur = { start: t, end: t + step, gap, gapNames }
+    }
+  }
+  if (cur) out.push(cur)
+  return out
+}
+
+/** Участки, где одновременно действуют две и более смены. */
+export function overlapRanges(spans: { start: number; end: number }[]): { start: number; end: number }[] {
+  const ev: { t: number; d: number }[] = []
+  for (const s of spans) {
+    ev.push({ t: s.start, d: 1 })
+    ev.push({ t: s.end, d: -1 })
+  }
+  ev.sort((a, b) => a.t - b.t || a.d - b.d)
+  const out: { start: number; end: number }[] = []
+  let n = 0
+  let open: number | null = null
+  for (const e of ev) {
+    const prev = n
+    n += e.d
+    if (prev < 2 && n >= 2) open = e.t
+    else if (prev >= 2 && n < 2 && open != null) {
+      if (e.t > open) out.push({ start: open, end: e.t })
+      open = null
+    }
+  }
+  return out
+}
+
+export type SnapMode = 'hour' | 'day'
+
+/** Привязка интервала к часам или суткам. Конец всегда позже начала хотя бы на один шаг. */
+export function snapRange(a: number, b: number, mode: SnapMode): [number, number] {
+  let s = Math.min(a, b)
+  let e = Math.max(a, b)
+  if (mode === 'hour') {
+    s = Math.floor(s / HOUR) * HOUR
+    e = Math.ceil(e / HOUR) * HOUR
+    if (e - s < HOUR) e = s + HOUR
+  } else {
+    s = startOfDay(s).getTime()
+    const endDay = startOfDay(e).getTime()
+    e = e > endDay ? endDay + DAY : endDay
+    if (e - s < DAY) e = s + DAY
+  }
+  return [s, e]
+}

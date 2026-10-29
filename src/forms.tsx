@@ -1,10 +1,37 @@
 import { useMemo, useState } from 'react'
 import { addDays, calendarOnCall, fmtDT, fmtDur, isoDate, layerAnchor, layerOnCall, periodMs, rotationLabel, startOfDay, uid } from './engine'
 import { useStore } from './store'
-import { Avatar, Btn, Field, inputCls, KIND_META, KindBadge, Modal, TYPE_META } from './ui'
-import type { Calendar, Layer, LayerKind } from './types'
+import { Avatar, Btn, Field, inputCls, KIND_META, KindMark, Modal } from './ui'
+import type { Calendar, Layer, LayerKind, Restriction } from './types'
 
 const toLocalInput = (d: Date) => `${isoDate(d)}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+const mondayOf = (d: Date) => { const x = startOfDay(d); return addDays(x, -((x.getDay() + 6) % 7)) }
+const noneR = (): Restriction => ({ type: 'none', from: '00:00', to: '00:00', days: [] })
+
+interface Tpl { id: string; name: string; hint: string; patch: (today: Date) => Partial<Layer> }
+
+const TEMPLATES: Tpl[] = [
+  {
+    id: 'sutki', name: 'Сутки через трое', hint: 'Сутки в очереди из четырёх, передача в 09:00',
+    patch: (today) => ({ kind: 'primary', startsAt: isoDate(today), handoffTime: '09:00', rotation: { unit: 'day', count: 1 }, parallel: 1, restriction: noneR() }),
+  },
+  {
+    id: 'dev-week', name: 'Неделя разработки', hint: 'Неделя, передача в понедельник в 10:00',
+    patch: () => ({ kind: 'primary', startsAt: isoDate(mondayOf(new Date())), handoffTime: '10:00', rotation: { unit: 'week', count: 1 }, parallel: 1, restriction: noneR() }),
+  },
+  {
+    id: 'two-two', name: '2/2 по 12 часов', hint: 'Двое суток, окно 09:00–21:00',
+    patch: (today) => ({ kind: 'business', startsAt: isoDate(today), handoffTime: '09:00', rotation: { unit: 'day', count: 2 }, parallel: 1, restriction: { type: 'daily', from: '09:00', to: '21:00', days: [] } }),
+  },
+  {
+    id: 'weekends', name: 'Только выходные', hint: 'Суббота и воскресенье, круглосуточно',
+    patch: () => ({ kind: 'night', startsAt: isoDate(mondayOf(new Date())), handoffTime: '00:00', rotation: { unit: 'week', count: 1 }, parallel: 1, restriction: { type: 'weekly', from: '00:00', to: '00:00', days: [5, 6] } }),
+  },
+  {
+    id: 'office', name: 'Рабочие часы 9-18', hint: 'Понедельник–пятница, 09:00–18:00',
+    patch: () => ({ kind: 'business', startsAt: isoDate(mondayOf(new Date())), handoffTime: '09:00', rotation: { unit: 'week', count: 1 }, parallel: 1, restriction: { type: 'weekly', from: '09:00', to: '18:00', days: [0, 1, 2, 3, 4] } }),
+  },
+]
 
 /* ---------------- «Взять дежурство» ---------------- */
 export function TakeDutyModal({ calendarId, onClose }: { calendarId?: string; onClose: () => void }) {
@@ -51,24 +78,21 @@ export function TakeDutyModal({ calendarId, onClose }: { calendarId?: string; on
 
   return (
     <Modal title="Взять дежурство" onClose={onClose} wide>
-      <div className="space-y-4">
-        <div className="flex items-center gap-3 rounded-lg bg-blue-50 p-3 text-sm">
-          <Avatar p={me} /> <div><b>{me.name}</b> — запись на себя. Выберите календарь и время, остальное сделаем мы.</div>
-        </div>
+      <div className="space-y-6">
+        <p className="text-sm text-muted"><span className="text-ink">{me.name}</span> записывается на себя. Календарь и время — остальное подставим.</p>
         <Field label="Календарь">
           <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
             {state.calendars.map((x) => (
-              <button key={x.id} onClick={() => setCalId(x.id)} className={`rounded-lg border p-2 text-left text-sm ${x.id === calId ? 'border-blue-500 ring-2 ring-blue-100' : 'border-slate-200 hover:border-slate-300'}`}>
-                <div className="font-medium">{TYPE_META[x.type].icon} {x.name}</div>
-                <div className="text-xs text-slate-500">{TYPE_META[x.type].label}</div>
+              <button key={x.id} onClick={() => setCalId(x.id)} className={`rounded-lg border px-3 py-2 text-left text-sm ${x.id === calId ? 'border-accent bg-accent-soft' : 'border-line hover:bg-surface-2'}`}>
+                <div className="font-medium">{x.name}</div>
               </button>
             ))}
           </div>
         </Field>
         <Field label="Когда">
-          <div className="mb-2 flex flex-wrap gap-2">
+          <div className="mb-3 flex flex-wrap gap-2">
             {presets.map((p) => (
-              <button key={p.label} onClick={() => { setStart(toLocalInput(p.s)); setEnd(toLocalInput(p.e)) }} className="rounded-full border border-slate-300 px-3 py-1 text-xs hover:bg-slate-50">{p.label}</button>
+              <button key={p.label} onClick={() => { setStart(toLocalInput(p.s)); setEnd(toLocalInput(p.e)) }} className="rounded-full px-3 py-1 text-xs text-muted hover:bg-surface-2 hover:text-ink">{p.label}</button>
             ))}
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -78,26 +102,26 @@ export function TakeDutyModal({ calendarId, onClose }: { calendarId?: string; on
         </Field>
         <Field label="Как">
           <div className="grid grid-cols-2 gap-2 text-sm">
-            <button onClick={() => setMode('add')} className={`rounded-lg border p-2 text-left ${mode === 'add' ? 'border-blue-500 ring-2 ring-blue-100' : 'border-slate-200'}`}>
-              <b>Дополнительно</b><div className="text-xs text-slate-500">дежурю параллельно с текущей ротацией</div>
+            <button onClick={() => setMode('add')} className={`rounded-lg border px-3 py-2 text-left ${mode === 'add' ? 'border-accent bg-accent-soft' : 'border-line'}`}>
+              <span className="font-medium">Дополнительно</span><div className="text-xs text-muted">параллельно с ротацией</div>
             </button>
-            <button onClick={() => setMode('replace')} className={`rounded-lg border p-2 text-left ${mode === 'replace' ? 'border-blue-500 ring-2 ring-blue-100' : 'border-slate-200'}`}>
-              <b>Подменить коллегу</b><div className="text-xs text-slate-500">override, как в OneUptime</div>
+            <button onClick={() => setMode('replace')} className={`rounded-lg border px-3 py-2 text-left ${mode === 'replace' ? 'border-accent bg-accent-soft' : 'border-line'}`}>
+              <span className="font-medium">Подменить коллегу</span><div className="text-xs text-muted">override поверх смены</div>
             </button>
           </div>
         </Field>
         {mode === 'replace' && (
-          <Field label="Кого подменяю (дежурит в начале выбранного интервала)">
+          <Field label="Кого подменяю">
             <select className={inputCls} value={replaces} onChange={(e) => setReplaces(e.target.value)}>
-              <option value="">— выберите —</option>
+              <option value="">Выберите</option>
               {candidates.map((e) => <option key={e.personId} value={e.personId}>{state.people.find((p) => p.id === e.personId)?.name} · {e.layerName}</option>)}
             </select>
           </Field>
         )}
-        <Field label="Комментарий (необязательно)"><input className={inputCls} value={note} onChange={(e) => setNote(e.target.value)} placeholder="например: релиз 2.14, ночное окно" /></Field>
-        <div className="flex items-center justify-between border-t border-slate-100 pt-4">
-          <div className="text-sm text-slate-600">{eT > sT ? <>Итого: <b>{fmtDur(eT - sT)}</b>, {fmtDT(sT)} → {fmtDT(eT)}</> : <span className="text-red-600">Окончание раньше начала</span>}</div>
-          <div className="flex gap-2"><Btn variant="ghost" onClick={onClose}>Отмена</Btn><Btn onClick={submit} disabled={!valid}>✋ Взять дежурство</Btn></div>
+        <Field label="Комментарий"><input className={inputCls} value={note} onChange={(e) => setNote(e.target.value)} placeholder="например: релиз 2.14, ночное окно" /></Field>
+        <div className="flex items-center justify-between gap-4 pt-2">
+          <div className="text-sm text-muted">{eT > sT ? <>{fmtDur(eT - sT)} · {fmtDT(sT)}</> : <span className="text-danger">Окончание раньше начала</span>}</div>
+          <div className="flex gap-2"><Btn variant="ghost" onClick={onClose}>Отмена</Btn><Btn onClick={submit} disabled={!valid}>Взять дежурство</Btn></div>
         </div>
       </div>
     </Modal>
@@ -108,6 +132,7 @@ export function TakeDutyModal({ calendarId, onClose }: { calendarId?: string; on
 export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer; onClose: () => void }) {
   const { state, updateCalendar, toast } = useStore()
   const [step, setStep] = useState(0)
+  const [tpl, setTpl] = useState<string | null>(null)
   const [l, setL] = useState<Layer>(layer ?? {
     id: uid(), name: '', kind: 'primary', startsAt: isoDate(new Date()), handoffTime: '10:00', rotation: { unit: 'week', count: 1 },
     participants: state.currentUserId ? [state.currentUserId] : [], parallel: 1, restriction: { type: 'none', from: '09:00', to: '18:00', days: [0, 1, 2, 3, 4] },
@@ -118,6 +143,17 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
   const toggle = (id: string) => set({ participants: l.participants.includes(id) ? l.participants.filter((x) => x !== id) : [...l.participants, id] })
   const move = (i: number, d: number) => { const a = [...l.participants]; const j = i + d; if (j < 0 || j >= a.length) return; [a[i], a[j]] = [a[j], a[i]]; set({ participants: a }) }
   const okStep = [l.name.trim().length > 0, l.rotation.count > 0, l.participants.length > 0, true, true][step]
+  const applyTpl = (t: Tpl) => {
+    const patch = t.patch(new Date())
+    setL((x) => ({
+      ...x,
+      ...patch,
+      name: !x.name.trim() || TEMPLATES.some((p) => p.name === x.name) ? t.name : x.name,
+      rotation: patch.rotation ? { ...patch.rotation } : x.rotation,
+      restriction: patch.restriction ? { ...patch.restriction, days: [...patch.restriction.days] } : x.restriction,
+    }))
+    setTpl(t.id)
+  }
   const save = () => {
     const fixed = { ...l, parallel: Math.max(1, Math.min(l.parallel, l.participants.length)) }
     updateCalendar(c.id, (cal) => ({ ...cal, layers: layer ? cal.layers.map((x) => (x.id === l.id ? fixed : x)) : [...cal.layers, fixed] }))
@@ -130,57 +166,78 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
     return Array.from({ length: 6 }, (_, i) => ({ start: a + i * p, end: a + (i + 1) * p, ids: layerOnCall({ ...l, restriction: { ...l.restriction, type: 'none' } }, a + i * p + 1) }))
   }, [l])
   const dayNames = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+  const active = TEMPLATES.find((t) => t.id === tpl)
 
   return (
-    <Modal title={layer ? `Слой «${layer.name}»` : 'Новый слой ротации'} onClose={onClose} wide>
-      <div className="mb-5 flex gap-1">
-        {steps.map((s, i) => (
-          <button key={s} onClick={() => i < step && setStep(i)} className={`flex-1 rounded-md px-2 py-1.5 text-xs font-medium ${i === step ? 'bg-blue-600 text-white' : i < step ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>{i + 1}. {s}</button>
-        ))}
+    <Modal title={layer ? l.name || 'Слой' : 'Новый слой'} onClose={onClose} wide>
+      <div className="mb-6 flex items-center justify-between gap-4 text-sm">
+        <div className="text-muted">Шаг {step + 1} из {steps.length} · {steps[step]}</div>
+        <div className="flex gap-1">
+          {steps.map((s, i) => (
+            <button key={s} aria-label={s} disabled={i > step} onClick={() => i <= step && setStep(i)} className={`h-1.5 w-6 rounded-full ${i === step ? 'bg-accent' : i < step ? 'bg-accent/40' : 'bg-surface-2'}`} />
+          ))}
+        </div>
       </div>
       {step === 0 && (
-        <div className="space-y-4">
-          <Field label="Название слоя" hint="Что покрывает слой: «Основной», «Ночная смена», «SRE-резерв»…"><input autoFocus className={inputCls} value={l.name} onChange={(e) => set({ name: e.target.value })} placeholder="Например: Основная ротация разработки" /></Field>
-          <Field label="Тип дежурства (цвет/бейдж в календаре)">
-            <div className="flex flex-wrap gap-2">
+        <div className="space-y-6">
+          <div data-testid="layer-templates">
+            <div className="mb-2 text-sm font-medium">Шаблоны</div>
+            <div className="divide-y divide-line rounded-xl border border-line">
+              {TEMPLATES.map((t) => (
+                <button key={t.id} onClick={() => applyTpl(t)} className={`flex w-full items-baseline justify-between gap-4 px-3 py-2.5 text-left text-sm hover:bg-surface-2 ${tpl === t.id ? 'bg-accent-soft' : ''}`}>
+                  <span className="font-medium">{t.name}</span>
+                  <span className="text-right text-xs text-muted">{t.hint}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+          <Field label="Название слоя" hint="Что покрывает слой: основная смена, ночь, резерв.">
+            <input autoFocus className={inputCls} value={l.name} onChange={(e) => set({ name: e.target.value })} placeholder="Например: Основная ротация разработки" />
+          </Field>
+          <Field label="Тип дежурства">
+            <div className="flex flex-wrap gap-1">
               {(Object.keys(KIND_META).filter((k) => k !== 'override') as LayerKind[]).map((k) => (
-                <button key={k} onClick={() => set({ kind: k })} className={`rounded-full border-2 px-3 py-1 text-sm ${l.kind === k ? '' : 'border-transparent opacity-60'}`} style={{ borderColor: l.kind === k ? KIND_META[k].color : undefined, background: KIND_META[k].bg, color: KIND_META[k].color }}>{KIND_META[k].label}</button>
+                <button key={k} onClick={() => set({ kind: k })} className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-sm ${l.kind === k ? 'bg-surface-2 text-ink' : 'text-muted hover:text-ink'}`}>
+                  <span className="h-1.5 w-1.5 rounded-full" style={{ background: KIND_META[k].color }} />{KIND_META[k].label}
+                </button>
               ))}
             </div>
           </Field>
         </div>
       )}
       {step === 1 && (
-        <div className="space-y-4">
-          <Field label="Длительность смены (каждый участник дежурит…)">
-            <div className="mb-2 flex flex-wrap gap-2">
+        <div className="space-y-6">
+          {active && <p className="text-sm text-muted">Шаблон «{active.name}». Длительность можно поправить.</p>}
+          <Field label="Длительность смены">
+            <div className="mb-3 flex flex-wrap gap-2">
               {[['day', 1, 'Сутки'], ['day', 2, '2 суток'], ['day', 3, '3 суток'], ['week', 1, 'Неделя'], ['week', 2, '2 недели'], ['week', 4, '4 недели']].map(([u, n, lbl]) => (
-                <button key={String(lbl)} onClick={() => set({ rotation: { unit: u as 'day' | 'week', count: n as number } })} className={`rounded-full border px-3 py-1 text-sm ${l.rotation.unit === u && l.rotation.count === n ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-300'}`}>{lbl}</button>
+                <button key={String(lbl)} onClick={() => set({ rotation: { unit: u as 'day' | 'week', count: n as number } })} className={`rounded-full px-3 py-1 text-sm ${l.rotation.unit === u && l.rotation.count === n ? 'bg-accent text-white' : 'bg-surface-2 text-muted hover:text-ink'}`}>{lbl}</button>
               ))}
             </div>
-            <div className="flex items-center gap-2 text-sm">или: каждые
+            <div className="flex items-center gap-2 text-sm text-muted">каждые
               <input type="number" min={1} max={52} className={`${inputCls} w-20`} value={l.rotation.count} onChange={(e) => set({ rotation: { ...l.rotation, count: Math.max(1, +e.target.value) } })} />
-              <select className={`${inputCls} w-32`} value={l.rotation.unit} onChange={(e) => set({ rotation: { ...l.rotation, unit: e.target.value as 'day' | 'week' } })}><option value="day">сут.</option><option value="week">нед.</option></select>
+              <select className={`${inputCls} w-28`} value={l.rotation.unit} onChange={(e) => set({ rotation: { ...l.rotation, unit: e.target.value as 'day' | 'week' } })}><option value="day">сут.</option><option value="week">нед.</option></select>
             </div>
           </Field>
           <div className="grid grid-cols-2 gap-4">
             <Field label="Начало ротации"><input type="date" className={inputCls} value={l.startsAt} onChange={(e) => set({ startsAt: e.target.value })} /></Field>
-            <Field label="Время передачи смены (handoff), МСК"><input type="time" className={inputCls} value={l.handoffTime} onChange={(e) => set({ handoffTime: e.target.value })} /></Field>
+            <Field label="Передача смены, МСК"><input type="time" className={inputCls} value={l.handoffTime} onChange={(e) => set({ handoffTime: e.target.value })} /></Field>
           </div>
         </div>
       )}
       {step === 2 && (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div className="grid grid-cols-1 gap-8 md:grid-cols-2">
           <div>
-            <div className="mb-1 text-sm font-medium">Выберите участников</div>
-            <div className="max-h-80 space-y-3 overflow-y-auto rounded-lg border border-slate-200 p-2 scroll-thin">
+            <div className="mb-2 text-sm font-medium">Участники</div>
+            {tpl === 'sutki' && <p className="mb-2 text-xs text-muted">Для «сутки через трое» в очереди обычно четверо.</p>}
+            <div className="max-h-80 space-y-3 overflow-y-auto pr-1 scroll-thin">
               {teams.map((t) => (
                 <div key={t}>
-                  <div className="text-xs font-semibold text-slate-400 uppercase">{t}</div>
+                  <div className="mb-1 text-xs text-faint">{t}</div>
                   {state.people.filter((p) => p.team === t).map((p) => (
-                    <label key={p.id} className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-slate-50">
+                    <label key={p.id} className="flex cursor-pointer items-center gap-2 rounded-md px-1 py-1 text-sm hover:bg-surface-2">
                       <input type="checkbox" checked={l.participants.includes(p.id)} onChange={() => toggle(p.id)} />
-                      <Avatar p={p} size={22} /> {p.name} <span className="text-xs text-slate-400">{p.title}</span>
+                      <Avatar p={p} size={22} /> {p.name}
                     </label>
                   ))}
                 </div>
@@ -188,24 +245,24 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
             </div>
           </div>
           <div>
-            <div className="mb-1 text-sm font-medium">Порядок очереди</div>
+            <div className="mb-2 text-sm font-medium">Порядок очереди</div>
             <ol className="space-y-1">
               {l.participants.map((id, i) => {
                 const p = state.people.find((x) => x.id === id)!
                 return (
-                  <li key={id} className="flex items-center gap-2 rounded-lg border border-slate-200 px-2 py-1 text-sm">
-                    <span className="w-5 text-slate-400">{i + 1}.</span><Avatar p={p} size={22} /><span className="flex-1">{p.name}</span>
-                    <button onClick={() => move(i, -1)} className="text-slate-400 hover:text-slate-800">↑</button>
-                    <button onClick={() => move(i, 1)} className="text-slate-400 hover:text-slate-800">↓</button>
+                  <li key={id} className="flex items-center gap-2 rounded-lg px-1 py-1 text-sm">
+                    <span className="w-4 text-faint">{i + 1}</span><Avatar p={p} size={22} /><span className="flex-1">{p.name}</span>
+                    <button onClick={() => move(i, -1)} className="px-1 text-faint hover:text-ink" aria-label="Выше">↑</button>
+                    <button onClick={() => move(i, 1)} className="px-1 text-faint hover:text-ink" aria-label="Ниже">↓</button>
                   </li>
                 )
               })}
             </ol>
-            <div className="mt-4">
-              <Field label="Сколько человек дежурят одновременно в этом слое" hint="Например, 3 разработчика по суткам параллельно. Для другой группы (2 человека по неделе) добавьте второй слой.">
+            <div className="mt-6">
+              <Field label="Сколько человек одновременно" hint="Для второй группы заведите ещё один слой.">
                 <div className="flex gap-2">
                   {[1, 2, 3, 4, 5].map((n) => (
-                    <button key={n} disabled={n > Math.max(1, l.participants.length)} onClick={() => set({ parallel: n })} className={`h-9 w-9 rounded-lg border text-sm font-semibold disabled:opacity-30 ${l.parallel === n ? 'border-blue-500 bg-blue-600 text-white' : 'border-slate-300'}`}>{n}</button>
+                    <button key={n} disabled={n > Math.max(1, l.participants.length)} onClick={() => set({ parallel: n })} className={`h-9 w-9 rounded-lg text-sm font-medium disabled:opacity-30 ${l.parallel === n ? 'bg-accent text-white' : 'bg-surface-2 text-ink'}`}>{n}</button>
                   ))}
                 </div>
               </Field>
@@ -214,47 +271,48 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
         </div>
       )}
       {step === 3 && (
-        <div className="space-y-4">
-          <Field label="Когда слой активен (restriction times)" hint="Вне этих часов слой не дежурит — работают другие слои календаря.">
+        <div className="space-y-6">
+          {active && <p className="text-sm text-muted">Часы из шаблона «{active.name}».</p>}
+          <Field label="Когда слой активен" hint="Вне этих часов работают другие слои календаря.">
             <div className="grid grid-cols-3 gap-2 text-sm">
-              {([['none', 'Круглосуточно', '24×7'], ['daily', 'Каждый день', 'в заданные часы'], ['weekly', 'По дням недели', 'напр. только выходные']] as const).map(([v, a, b]) => (
-                <button key={v} onClick={() => set({ restriction: { ...l.restriction, type: v } })} className={`rounded-lg border p-2 text-left ${l.restriction.type === v ? 'border-blue-500 ring-2 ring-blue-100' : 'border-slate-200'}`}><b>{a}</b><div className="text-xs text-slate-500">{b}</div></button>
+              {([['none', 'Круглосуточно', '24×7'], ['daily', 'Каждый день', 'в заданные часы'], ['weekly', 'По дням недели', 'например, выходные']] as const).map(([v, a, b]) => (
+                <button key={v} onClick={() => set({ restriction: { ...l.restriction, type: v } })} className={`rounded-lg border px-3 py-2 text-left ${l.restriction.type === v ? 'border-accent bg-accent-soft' : 'border-line'}`}><span className="font-medium">{a}</span><div className="text-xs text-muted">{b}</div></button>
               ))}
             </div>
           </Field>
           {l.restriction.type !== 'none' && (
             <div className="grid grid-cols-2 gap-4">
               <Field label="С"><input type="time" className={inputCls} value={l.restriction.from} onChange={(e) => set({ restriction: { ...l.restriction, from: e.target.value } })} /></Field>
-              <Field label="До" hint="Если «до» раньше «с» — окно через полночь. 00:00–00:00 = весь день."><input type="time" className={inputCls} value={l.restriction.to} onChange={(e) => set({ restriction: { ...l.restriction, to: e.target.value } })} /></Field>
+              <Field label="До" hint="Если «до» раньше «с» — окно через полночь."><input type="time" className={inputCls} value={l.restriction.to} onChange={(e) => set({ restriction: { ...l.restriction, to: e.target.value } })} /></Field>
             </div>
           )}
           {l.restriction.type === 'weekly' && (
             <div className="flex gap-2">
               {dayNames.map((d, i) => (
                 <button key={d} onClick={() => set({ restriction: { ...l.restriction, days: l.restriction.days.includes(i) ? l.restriction.days.filter((x) => x !== i) : [...l.restriction.days, i] } })}
-                  className={`h-9 w-11 rounded-lg border text-sm ${l.restriction.days.includes(i) ? 'border-blue-500 bg-blue-600 text-white' : 'border-slate-300'} ${i > 4 ? 'text-rose-600' : ''}`}>{d}</button>
+                  className={`h-9 w-11 rounded-lg text-sm ${l.restriction.days.includes(i) ? 'bg-accent text-white' : 'bg-surface-2 text-muted'}`}>{d}</button>
               ))}
             </div>
           )}
         </div>
       )}
       {step === 4 && (
-        <div className="space-y-3 text-sm">
-          <div className="flex flex-wrap items-center gap-2"><b className="text-base">{l.name}</b><KindBadge k={l.kind} /><span className="text-slate-500">ротация {rotationLabel(l)}, передача в {l.handoffTime} МСК, {Math.min(l.parallel, l.participants.length)} чел. одновременно</span></div>
-          <div className="font-medium">Ближайшие смены:</div>
+        <div className="space-y-4 text-sm">
+          <div className="flex flex-wrap items-center gap-3"><span className="text-base font-medium">{l.name}</span><KindMark k={l.kind} /></div>
+          <p className="text-muted">{rotationLabel(l)}, передача в {l.handoffTime}, {Math.min(l.parallel, l.participants.length)} одновременно{active ? ` · шаблон «${active.name}»` : ''}</p>
           <div className="space-y-1">
             {preview.map((r, i) => (
-              <div key={i} className="flex items-center gap-3 rounded-lg bg-slate-50 px-3 py-1.5">
-                <span className="w-64 text-slate-500">{fmtDT(r.start)} → {fmtDT(r.end)}</span>
-                <span className="flex flex-wrap gap-2">{r.ids.map((id) => { const p = state.people.find((x) => x.id === id)!; return <span key={id} className="flex items-center gap-1"><Avatar p={p} size={20} />{p.name}</span> })}</span>
+              <div key={i} className="flex flex-wrap items-center gap-3 rounded-lg px-1 py-1.5">
+                <span className="w-72 text-muted">{fmtDT(r.start)} — {fmtDT(r.end)}</span>
+                <span className="flex flex-wrap gap-3">{r.ids.map((id) => { const p = state.people.find((x) => x.id === id)!; return <span key={id} className="flex items-center gap-1.5"><Avatar p={p} size={20} />{p.name}</span> })}</span>
               </div>
             ))}
           </div>
         </div>
       )}
-      <div className="mt-6 flex justify-between border-t border-slate-100 pt-4">
-        <Btn variant="ghost" onClick={() => (step ? setStep(step - 1) : onClose())}>{step ? '← Назад' : 'Отмена'}</Btn>
-        {step < steps.length - 1 ? <Btn disabled={!okStep} onClick={() => setStep(step + 1)}>Далее →</Btn> : <Btn onClick={save}>💾 Сохранить слой</Btn>}
+      <div className="mt-8 flex justify-between">
+        <Btn variant="ghost" onClick={() => (step ? setStep(step - 1) : onClose())}>{step ? 'Назад' : 'Отмена'}</Btn>
+        {step < steps.length - 1 ? <Btn disabled={!okStep} onClick={() => setStep(step + 1)}>Далее</Btn> : <Btn onClick={save}>Сохранить слой</Btn>}
       </div>
     </Modal>
   )

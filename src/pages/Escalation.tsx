@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { fmtT } from '../engine'
 import { useNow, useStore } from '../store'
-import { Avatar, Btn, Card, EscalationChain, inputCls, resolveChain, TypeBadge } from '../ui'
+import { Btn, Card, EscalationChain, inputCls, resolveChain } from '../ui'
 
 interface Ev { t: number; text: string; level?: number; kind: 'page' | 'wait' | 'ack' | 'end' }
 
@@ -29,53 +29,52 @@ export function Escalation() {
       if (i >= total) { setEvents((e) => [...e, { t: 0, text: 'Цепочка исчерпана — инцидент остался без подтверждения. Оповещение руководству СЦ.', kind: 'end' }]); setRunning(false); return }
       const lv = chain[i % chain.length]
       const round = Math.floor(i / chain.length) + 1
-      setEvents((e) => [...e, { t: lv.delayMin, level: lv.level, kind: 'page', text: `${round > 1 ? `[повтор ${round}] ` : ''}Уровень ${lv.level} — ${lv.label}: ${lv.people.map((p) => p.name).join(', ') || 'никого'} (📞 звонок + ✈️ Telegram)` }])
-      lv.people.forEach((p) => sendTg({ toPersonId: p.id, calendarId: c.id, kind: 'escalation', text: `🚨 ${inc} · уровень ${lv.level} (${lv.label})\nКалендарь: «${c.name}»\n${title}\n${lv.level > 1 ? 'Предыдущий уровень не подтвердил.\n' : ''}[✅ Принять] [⏫ Эскалировать] [🔕 Не могу]` }))
+      setEvents((e) => [...e, { t: lv.delayMin, level: lv.level, kind: 'page', text: `${round > 1 ? `[повтор ${round}] ` : ''}Уровень ${lv.level} — ${lv.label}: ${lv.people.map((p) => p.name).join(', ') || 'никого'} (звонок и Telegram)` }])
+      lv.people.forEach((p) => sendTg({ toPersonId: p.id, calendarId: c.id, kind: 'escalation', text: `🚨 ${inc} · уровень ${lv.level} (${lv.label})\nКалендарь: «${c.name}»\n${title}\n${lv.level > 1 ? 'Предыдущий уровень не подтвердил.\n' : ''}[Принять] [Эскалировать]` }))
       i++
       timer.current = window.setTimeout(tick, 1600)
     }
     timer.current = window.setTimeout(tick, 600)
   }
-  const ack = () => { stop(); setEvents((e) => [...e, { t: 0, kind: 'ack', text: '✅ Инцидент подтверждён (ack) — эскалация остановлена' }]) }
+  const ack = () => { stop(); setEvents((e) => [...e, { t: 0, kind: 'ack', text: 'Инцидент подтверждён — эскалация остановлена' }]) }
 
   return (
-    <div className="space-y-5">
-      <div><h1 className="text-2xl font-bold">Эскалации</h1><p className="text-sm text-slate-500">Цепочка: дежурный → следующий по ротации → лид группы → руководитель дежурного → СЦ. Настраивается в каждом календаре.</p></div>
+    <div className="space-y-8">
+      <header>
+        <h1 className="text-2xl font-semibold">Эскалации</h1>
+        <p className="mt-1 max-w-xl text-sm text-muted">Дежурный, следующий по ротации, лид, руководитель, ситуационный центр. Правила задаются в календаре.</p>
+      </header>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Card className="space-y-3 p-4">
-          <h3 className="font-semibold">▶ Симуляция инцидента</h3>
+        <Card className="space-y-4 p-5">
+          <h3 className="font-medium">Симуляция инцидента</h3>
           <select className={inputCls} value={calId} onChange={(e) => { setCalId(e.target.value); stop(); setEvents([]) }}>{state.calendars.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select>
           <input className={inputCls} value={title} onChange={(e) => setTitle(e.target.value)} />
-          <div className="flex gap-2"><Btn onClick={run}>🚨 Запустить</Btn><Btn variant="ghost" onClick={ack} disabled={!running}>✅ Подтвердить (ack)</Btn></div>
-          <p className="text-xs text-slate-500">Время ускорено: 1 «минута» ожидания ≈ доля секунды. Сообщения появятся в разделе «Уведомления (Telegram)».</p>
-          <div className="space-y-1.5">
+          <div className="flex gap-2"><Btn onClick={run}>Запустить</Btn><Btn variant="ghost" onClick={ack} disabled={!running}>Подтвердить</Btn></div>
+          <p className="text-xs text-muted">Время ускорено. Сообщения появятся в уведомлениях.</p>
+          <div className="space-y-2">
             {events.map((e, i) => (
-              <div key={i} className={`rounded-lg px-3 py-1.5 text-sm ${e.kind === 'ack' ? 'bg-emerald-50 text-emerald-800' : e.kind === 'end' ? 'bg-red-50 text-red-700' : 'bg-slate-50'}`}>
-                <span className="mr-2 font-mono text-xs text-slate-400">{e.level ? `T+${e.t}м` : fmtT(Date.now())}</span>{e.text}
+              <div key={i} className={`rounded-lg px-3 py-2 text-sm ${e.kind === 'ack' ? 'tint-ok' : e.kind === 'end' ? 'tint-danger' : 'tint-neutral'}`}>
+                <span className="mr-2 text-xs text-faint">{e.level ? `+${e.t} мин` : fmtT(Date.now())}</span>{e.text}
               </div>
             ))}
           </div>
         </Card>
-        <Card className="p-4">
-          <div className="mb-3 flex items-center justify-between"><h3 className="font-semibold">Цепочка «{c.name}» сейчас</h3><TypeBadge t={c.type} /></div>
+        <Card className="p-5">
+          <h3 className="mb-4 font-medium">{c.name}</h3>
           <EscalationChain c={c} people={state.people} t={now} />
         </Card>
       </div>
-      <Card className="p-4">
-        <h3 className="mb-3 font-semibold">Все календари: кому звонить</h3>
-        <div className="divide-y divide-slate-100">
-          {state.calendars.map((x) => {
-            const lead = state.people.find((p) => p.id === x.leadId)
-            return (
-              <div key={x.id} className="flex flex-wrap items-center gap-3 py-2">
-                <a href={`#/calendars/${x.id}`} className="w-48 font-medium hover:text-blue-700">{x.name}</a>
-                <div className="flex-1"><EscalationChain c={x} people={state.people} t={now} compact /></div>
-                <span className="flex items-center gap-1 text-xs text-slate-500">лид: <Avatar p={lead} size={20} /> {lead?.phone}</span>
-              </div>
-            )
-          })}
+      <div>
+        <h3 className="mb-2 font-medium">Все календари</h3>
+        <div className="divide-y divide-line">
+          {state.calendars.map((x) => (
+            <div key={x.id} className="flex flex-wrap items-center gap-x-6 gap-y-2 py-3">
+              <a href={`#/calendars/${x.id}`} className="w-48 text-sm font-medium hover:text-accent">{x.name}</a>
+              <div className="min-w-0 flex-1"><EscalationChain c={x} people={state.people} t={now} compact /></div>
+            </div>
+          ))}
         </div>
-      </Card>
+      </div>
     </div>
   )
 }
