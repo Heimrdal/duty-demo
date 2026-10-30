@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react'
 import { calendarOnCall, DAY, fmtDT, fmtDur, HOUR, nextHandoff, sampleSegments, teamCoverage } from '../engine'
-import { TakeDutyModal } from '../forms'
 import { useNow, useStore } from '../store'
 import { DEFAULT_TZ, fmtTz, tzLabel } from '../tz'
 import { Avatar, Card, ContactActions, EscalationChain, TYPE_META } from '../ui'
@@ -10,7 +9,6 @@ export function Dashboard() {
   const { state } = useStore()
   const now = useNow()
   const [filter, setFilter] = useState<CalendarType | 'all'>('all')
-  const [take, setTake] = useState<string | null>(null)
   const [openChain, setOpenChain] = useState<string | null>(null)
   const me = state.people.find((p) => p.id === state.currentUserId)!
   const byId = (id: string) => state.people.find((p) => p.id === id)
@@ -81,9 +79,6 @@ export function Dashboard() {
                 </button>
                 {openChain === c.id && <EscalationChain c={c} people={state.people} t={now} calendars={state.calendars} compact />}
               </div>
-              <div className="px-5 pb-4">
-                <button className="text-sm text-muted hover:text-ink" onClick={() => setTake(c.id)}>Взять дежурство</button>
-              </div>
             </Card>
           )
         })}
@@ -107,7 +102,6 @@ export function Dashboard() {
         )}
       </section>
 
-      {take !== null && <TakeDutyModal calendarId={take || undefined} onClose={() => setTake(null)} />}
     </div>
   )
 }

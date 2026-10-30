@@ -1,6 +1,4 @@
-import { useState } from 'react'
 import { createPortal } from 'react-dom'
-import { TakeDutyModal } from './forms'
 import { About } from './pages/About'
 import { CalendarView } from './pages/CalendarView'
 import { Calendars } from './pages/Calendars'
@@ -49,7 +47,6 @@ export default function App() {
   const { state, update, reset, toasts, toast, dismissToast } = useStore()
   const { theme, toggle } = useTheme()
   const [route] = useHashRoute()
-  const [take, setTake] = useState(false)
   const me = state.people.find((p) => p.id === state.currentUserId)
   if (!me || route[0] === 'login') return <Login />
 
@@ -79,7 +76,6 @@ export default function App() {
               </a>
             )
           })}
-          <button onClick={() => setTake(true)} className="mt-4 w-full rounded-lg bg-accent px-3 py-2 text-[13px] font-medium text-white hover:bg-accent-2">Взять дежурство</button>
         </nav>
         <div className="border-t border-line p-3">
           <div className="flex items-center gap-2 px-1">
@@ -106,7 +102,6 @@ export default function App() {
         </header>
         <main className="rise mx-auto w-full max-w-[1180px] px-5 py-8 md:px-10 md:py-10">{page}</main>
       </div>
-      {take && <TakeDutyModal onClose={() => setTake(false)} />}
       {createPortal(
         <div role="status" aria-live="polite" className="fixed right-4 bottom-4 z-[60] space-y-2">
           {toasts.map((t) => (
