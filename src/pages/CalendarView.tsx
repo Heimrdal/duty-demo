@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { addDays, fmtDT, fmtDur, layerOnCall, rotationLabel, shiftGap, startOfDay, uid } from '../engine'
 import { fmtTz, startOfMonthTz, TZ_OPTIONS, tzLabel } from '../tz'
-import { AssignDutyModal, LayerWizard, TakeDutyModal, type AssignInit } from '../forms'
+import { AssignDutyModal, LayerWizard, RemoveDutyModal, TakeDutyModal, type AssignInit, type RemoveInit } from '../forms'
 import { canCancelShift, teamFirstIds } from '../perm'
 import { useNow, useScheduleAccess, useStore } from '../store'
 import { MonthGrid, Timeline, type BarTarget } from '../Timeline'
@@ -23,6 +23,7 @@ export function CalendarView({ id }: { id: string }) {
   const [take, setTake] = useState(false)
   const [draft, setDraft] = useState<Layer | 'new' | null>(() => (wantsRotation(id) ? 'new' : null))
   const [assign, setAssign] = useState<AssignInit | null>(null)
+  const [remove, setRemove] = useState<RemoveInit | null>(null)
   const access = useScheduleAccess(c)
   const cancel = useShiftCancel(c)
   if (!c) return <Empty title="Календарь не найден" action={<a className="text-sm text-accent" href="#/calendars">К списку</a>} />
@@ -62,14 +63,15 @@ export function CalendarView({ id }: { id: string }) {
       <div className="flex gap-5 border-b border-line text-sm">
         {TABS.map(([k, label]) => <button key={k} aria-current={tab === k ? 'page' : undefined} onClick={() => setTab(k)} className={`-mb-px border-b pb-2 ${tab === k ? 'border-ink font-medium text-ink' : 'border-transparent text-muted hover:text-ink'}`}>{label}</button>)}
       </div>
-      {tab === 'schedule' && <ScheduleTab c={c} access={access} onAssign={setAssign} onRotation={() => setTab('layers')} onCancel={cancel.request} />}
+      {tab === 'schedule' && <ScheduleTab c={c} access={access} onAssign={setAssign} onRemove={setRemove} onRotation={() => setTab('layers')} onCancel={cancel.request} />}
       {tab === 'layers' && <LayersTab c={c} access={access} onAdd={() => setDraft('new')} onEdit={setDraft} />}
       {tab === 'escalation' && <EscalationTab c={c} access={access} />}
       {tab === 'shifts' && <ShiftsTab c={c} access={access} onTake={() => setTake(true)} onAssign={setAssign} onCancel={cancel.request} />}
       {tab === 'settings' && <SettingsTab c={c} access={access} />}
       {cancel.dialog}
       {take && <TakeDutyModal calendarId={c.id} onClose={() => setTake(false)} />}
-      {assign && <AssignDutyModal c={c} init={assign} onClose={() => setAssign(null)} />}
+      {assign && <AssignDutyModal key={JSON.stringify(assign)} c={c} init={assign} onClose={() => setAssign(null)} />}
+      {remove && <RemoveDutyModal c={c} init={remove} onClose={() => setRemove(null)} onReplace={setAssign} onFill={setAssign} />}
       {draft && <LayerWizard c={c} layer={draft === 'new' ? undefined : draft} onClose={closeDraft} />}
     </div>
   )
@@ -91,7 +93,7 @@ function useShiftCancel(c: Calendar | undefined) {
   const doCancel = (s: Shift) => {
     if (!c) return
     updateCalendar(c.id, (cal) => ({ ...cal, shifts: cal.shifts.filter((x) => x.id !== s.id) }))
-    toast(`Смена отменена: ${byId(s.personId)?.name ?? ''}`, {
+    toast(s.removesPersonId ? `Снятие отменено: ${byId(s.removesPersonId)?.name ?? ''} снова дежурит` : `Смена отменена: ${byId(s.personId)?.name ?? ''}`, {
       label: 'Вернуть',
       onClick: () => updateCalendar(c.id, (cal) => (cal.shifts.some((x) => x.id === s.id) ? cal : { ...cal, shifts: [...cal.shifts, s] })),
     })
@@ -123,7 +125,7 @@ function useShiftCancel(c: Calendar | undefined) {
   return { request, dialog }
 }
 
-function ScheduleTab({ c, access, onAssign, onRotation, onCancel }: { c: Calendar; access: Access; onAssign: (x: AssignInit) => void; onRotation: () => void; onCancel: (s: Shift) => void }) {
+function ScheduleTab({ c, access, onAssign, onRemove, onRotation, onCancel }: { c: Calendar; access: Access; onAssign: (x: AssignInit) => void; onRemove: (x: RemoveInit) => void; onRotation: () => void; onCancel: (s: Shift) => void }) {
   const { state } = useStore()
   const now = useNow()
   const [view, setView] = useState<'7' | '14' | '28' | 'month'>('14')
@@ -135,9 +137,16 @@ function ScheduleTab({ c, access, onAssign, onRotation, onCancel }: { c: Calenda
   const actions = (t: BarTarget): BarAction[] => {
     const out: BarAction[] = []
     const ended = (t.shift ? +new Date(t.shift.end) : t.end) <= Date.now()
+    if (t.removal) {
+      // снят с дежурства: поставить другого в этот слот или вернуть человека
+      if (access.canEdit && !ended) out.push({ label: 'Поставить другого', onClick: () => onAssign({ start: t.start, end: t.end, fill: true }) })
+      if (access.canEdit) out.push({ label: 'Вернуть дежурного', onClick: () => onCancel(t.removal!) })
+      return out
+    }
     if (access.canEdit && !ended) {
       out.push({ label: 'Заменить дежурного', onClick: () => onAssign({ replacesPersonId: t.personId, start: t.shift ? +new Date(t.shift.start) : t.start, end: t.shift ? +new Date(t.shift.end) : t.end }) })
       if (t.shift) out.push({ label: 'Изменить', onClick: () => onAssign({ shift: t.shift }) })
+      else out.push({ label: 'Снять с дежурства', danger: true, onClick: () => onRemove({ personId: t.personId, layerId: t.layerId, start: t.start, end: t.end }) })
     }
     if (t.shift && canCancelShift(c, state.people, access.me, t.shift)) out.push({ label: access.canEdit ? 'Удалить' : 'Отменить мою смену', danger: true, onClick: () => onCancel(t.shift!) })
     return out
@@ -148,7 +157,7 @@ function ScheduleTab({ c, access, onAssign, onRotation, onCancel }: { c: Calenda
         <div className="flex flex-wrap items-center gap-3">
           <Btn onClick={() => onAssign({})}>Назначить дежурство</Btn>
           <button className="text-sm text-muted hover:text-ink" onClick={onRotation}>Изменить ротацию</button>
-          <span className="text-xs text-faint">Нажмите на смену, чтобы заменить дежурного</span>
+          <span className="text-xs text-faint">Нажмите на смену, чтобы заменить или снять дежурного, на розовую дыру — чтобы поставить</span>
         </div>
       ) : <ReadOnlyNote access={access} />}
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -165,7 +174,7 @@ function ScheduleTab({ c, access, onAssign, onRotation, onCancel }: { c: Calenda
         </div>
       </div>
       <Card className="overflow-hidden p-2">
-        {view === 'month' ? <MonthGrid c={c} month={month} now={now} /> : <Timeline c={c} from={from} days={days} now={now} actions={actions} />}
+        {view === 'month' ? <MonthGrid c={c} month={month} now={now} /> : <Timeline c={c} from={from} days={days} now={now} actions={actions} onFill={access.canEdit ? (start, end) => onAssign({ start, end, fill: true }) : undefined} />}
       </Card>
       <ScheduleLegend />
       <p className="text-xs text-faint">Линия — текущее время. Розовые интервалы на шкале — дыры во всём окне, счётчик на главной считает только текущий момент.</p>
@@ -274,7 +283,7 @@ function ShiftsTab({ c, access, onTake, onAssign, onCancel }: { c: Calendar; acc
   return (
     <div>
       <div className="mb-4 flex items-center justify-between gap-2">
-        <h3 className="font-medium">Разовые дежурства и подмены</h3>
+        <h3 className="font-medium">Разовые дежурства, подмены и снятия</h3>
         <div className="flex gap-2">
           {access.canEdit && <Btn variant="ghost" onClick={() => onAssign({})}>Назначить</Btn>}
           <Btn onClick={onTake}>Взять дежурство</Btn>
@@ -282,7 +291,22 @@ function ShiftsTab({ c, access, onTake, onAssign, onCancel }: { c: Calendar; acc
       </div>
       {list.length === 0 && <Empty title="Пока пусто" text={access.canEdit ? 'Назначьте дежурного или запишитесь сами.' : 'Запишитесь сами — из кнопки выше или с таймлайна команды.'} />}
       <div className="divide-y divide-line">
-        {list.map((s) => (
+        {list.map((s) => s.removesPersonId ? (
+          <div key={s.id} data-testid="removal-entry" className="group flex flex-wrap items-baseline gap-x-3 gap-y-1 py-3 text-sm">
+            <span className="font-medium text-muted line-through">{byId(s.removesPersonId)?.name}</span>
+            <span className="rounded bg-surface-2 px-1.5 text-xs text-muted">снят(а) с дежурства</span>
+            {s.layerId && <span className="text-muted">{c.layers.find((l) => l.id === s.layerId)?.name}</span>}
+            <span className="text-muted">{fmtDT(s.start, tz)} — {fmtDT(s.end, tz)} {zl}</span>
+            <span className="text-faint">{fmtDur(+new Date(s.end) - +new Date(s.start))}</span>
+            {s.note && <span className="text-faint">{s.note}</span>}
+            {access.canEdit && (
+              <span className="ml-auto flex gap-3">
+                {+new Date(s.end) > Date.now() && <button className="text-muted hover:text-ink" aria-label={`Поставить другого вместо ${byId(s.removesPersonId)?.name}, ${fmtDT(s.start, tz)} — ${fmtDT(s.end, tz)}`} onClick={() => onAssign({ start: +new Date(s.start), end: +new Date(s.end), fill: true })}>Поставить другого</button>}
+                <button className="text-muted hover:text-danger" aria-label={`Отменить снятие: ${byId(s.removesPersonId)?.name}, ${fmtDT(s.start, tz)} — ${fmtDT(s.end, tz)}`} onClick={() => onCancel(s)}>Отменить снятие</button>
+              </span>
+            )}
+          </div>
+        ) : (
           <div key={s.id} className="group flex flex-wrap items-baseline gap-x-3 gap-y-1 py-3 text-sm">
             <span className="font-medium">{byId(s.personId)?.name}</span>
             <KindMark k={s.replacesPersonId ? 'override' : 'oneoff'} />

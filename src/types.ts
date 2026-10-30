@@ -42,6 +42,10 @@ export interface Shift {
   start: string
   end: string
   replacesPersonId?: string
+  /** «Снять с дежурства»: этот человек не дежурит в интервале (personId пустой). Слот остаётся пустым, если никого не поставили. */
+  removesPersonId?: string
+  /** снятие только в этом слое; без layerId — во всех слоях календаря */
+  layerId?: string
   note?: string
   createdAt: string
 }

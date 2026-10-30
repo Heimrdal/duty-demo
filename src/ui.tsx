@@ -223,12 +223,20 @@ export const CONFLICT_STYLE: CSSProperties = {
 }
 
 /** Одна и та же легенда для всех таймлайнов. */
+/** Снят с дежурства: серая полоса с пунктиром, имя зачёркнуто. */
+export const REMOVED_STYLE: CSSProperties = {
+  background: 'var(--c-surface-2)',
+  outline: '1px dashed var(--c-line-strong)',
+  outlineOffset: '-1px',
+}
+
 export function ScheduleLegend() {
   return (
     <div data-testid="schedule-legend" className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-muted">
       <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-4 rounded-sm" style={{ background: '#2563eb' }} />цвет — человек</span>
       <span className="inline-flex items-center gap-1.5"><span className="h-3 w-5 rounded-sm" style={{ background: '#2563eb', ...SUBST_STYLE }} />штриховка с пунктиром — подмена</span>
       <span className="inline-flex items-center gap-1.5"><span className="relative inline-flex h-3 w-5 items-center justify-center rounded-sm text-[9px] font-bold text-warn" style={CONFLICT_STYLE}>!</span>оранжевая рамка с «!» — конфликт: две смены одного человека сразу</span>
+      <span className="inline-flex items-center gap-1.5"><span className="h-3 w-5 rounded-sm text-[8px] leading-3 text-muted line-through" style={REMOVED_STYLE} />серая зачёркнутая — снят с дежурства</span>
       <span className="inline-flex items-center gap-1.5"><span className="gap-band h-2.5 w-4 rounded-sm" />розовое «Нет дежурного» — никто не назначен</span>
       <span>нажмите на смену — подробности</span>
     </div>

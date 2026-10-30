@@ -150,7 +150,11 @@ export function migrateState(raw: unknown): State | null {
     const escalation = c.escalation.length && c.escalation[0].target === 'oncall'
       ? c.escalation
       : [{ id: uid(), target: 'oncall' as const, delayMin: 0 }, ...c.escalation]
-    return { ...c, timezone: c.timezone || 'Europe/Moscow', escalation: escalation.map((x, i) => (i === 0 ? { ...x, delayMin: 0 } : x)) }
+    // смены: старые записи без поля shifts/без personId приводим к валидному виду; снятия (removesPersonId) сохраняем
+    const shifts = (Array.isArray(c.shifts) ? c.shifts : [])
+      .filter((x) => x && x.start && x.end && (x.personId || x.removesPersonId))
+      .map((x) => (x.removesPersonId ? { ...x, personId: '' } : x))
+    return { ...c, timezone: c.timezone || 'Europe/Moscow', shifts, escalation: escalation.map((x, i) => (i === 0 ? { ...x, delayMin: 0 } : x)) }
   })
   return { ...s, version: STATE_VERSION, dataset: s.dataset ?? 'small', people, calendars }
 }

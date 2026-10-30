@@ -1,5 +1,5 @@
 import { useId, useMemo, useState } from 'react'
-import { addDays, calendarOnCall, describePattern, fmtDT, fmtDur, HOUR, hm, isoDate, layerBoundary, layerOnCall, rotationLabel, startOfDay, uid, weekday } from './engine'
+import { addDays, addGap, calendarOnCall, describePattern, makeRemoval, fmtDT, fmtDur, HOUR, hm, isoDate, layerBoundary, layerOnCall, rotationLabel, startOfDay, uid, weekday } from './engine'
 import { makeShift, teamFirstIds, upsertShift } from './perm'
 import { atDay, dayNumber, DEFAULT_TZ, fromInputTz, toInputTz, tzLabel } from './tz'
 import { PersonPicker } from './PersonPicker'
@@ -386,9 +386,10 @@ export interface AssignInit {
   replacesPersonId?: string
   start?: number
   end?: number
+  /** «Поставить дежурного» в пустой слот */
+  fill?: boolean
 }
 
-const ceil5 = (t: number) => Math.ceil(t / 300_000) * 300_000
 
 export function AssignDutyModal({ c, init, onClose }: { c: Calendar; init?: AssignInit; onClose: () => void }) {
   const { state, updateCalendar, sendTg, toast } = useStore()
@@ -402,13 +403,14 @@ export function AssignDutyModal({ c, init, onClose }: { c: Calendar; init?: Assi
     const now = Date.now()
     if (editing) return { s: +new Date(editing.start), e: +new Date(editing.end) }
     if (init?.start != null && init?.end != null) {
-      const s = Math.max(init.start, ceil5(now))
-      return { s, e: Math.max(init.end, s + HOUR) }
+      // уже идущий слот (дыра, замена) — с текущей минуты, чтобы дежурный появился сразу
+      const s = Math.max(init.start, now - (now % 60_000))
+      return { s, e: init.fill && init.end > s ? init.end : Math.max(init.end, s + HOUR) }
     }
     const tomorrow = addDays(startOfDay(now, tz), 1, tz)
     const h = Math.floor(hm(c.layers[0]?.handoffTime ?? '10:00') / 60)
     return { s: atHour(tomorrow, h, tz), e: atHour(addDays(tomorrow, 1, tz), h, tz) }
-  }, [editing, init?.start, init?.end, tz, c.layers])
+  }, [editing, init?.start, init?.end, init?.fill, tz, c.layers])
   const [personId, setPersonId] = useState(editing?.personId ?? init?.personId ?? '')
   const [start, setStart] = useState(toInputTz(defaults.s, tz))
   const [end, setEnd] = useState(toInputTz(defaults.e, tz))
@@ -456,7 +458,7 @@ export function AssignDutyModal({ c, init, onClose }: { c: Calendar; init?: Assi
   }
 
   return (
-    <Modal title={editing ? 'Изменить смену' : mode === 'replace' && init?.replacesPersonId ? 'Заменить дежурного' : 'Назначить дежурство'} onClose={onClose} wide>
+    <Modal title={editing ? 'Изменить смену' : mode === 'replace' && init?.replacesPersonId ? 'Заменить дежурного' : init?.fill ? 'Поставить дежурного' : 'Назначить дежурство'} onClose={onClose} wide>
       <div className="space-y-6">
         <p className="text-sm text-muted">Календарь «<span className="text-ink">{c.name}</span>». Человек получит уведомление в Telegram.</p>
         <Field label="Кто дежурит">
@@ -493,7 +495,136 @@ export function AssignDutyModal({ c, init, onClose }: { c: Calendar; init?: Assi
         <Field label="Комментарий"><input className={inputCls} value={note} onChange={(e) => setNote(e.target.value)} placeholder="например: отпуск, больничный, релиз" /></Field>
         <div className="flex items-center justify-between gap-4 pt-2">
           <div className="text-sm text-muted">{error ? <span id={errId} role="alert" className="text-danger">{error}</span> : <>{mode === 'replace' ? 'Замена' : 'Разовое'} · {fmtDur(eT - sT)} · с {fmtDT(sT, tz)} {zl}</>}</div>
-          <div className="flex gap-2"><Btn variant="ghost" onClick={onClose}>Отмена</Btn><Btn onClick={submit} disabled={!valid}>{editing ? 'Сохранить' : 'Назначить'}</Btn></div>
+          <div className="flex gap-2"><Btn variant="ghost" onClick={onClose}>Отмена</Btn><Btn onClick={submit} disabled={!valid}>{editing ? 'Сохранить' : init?.fill && mode === 'add' ? 'Поставить' : 'Назначить'}</Btn></div>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/* ---------------- «Снять с дежурства» (лид и руководитель) ---------------- */
+export interface RemoveInit { personId: string; layerId?: string; start: number; end: number }
+
+/**
+ * Снять человека со смены ротации целиком или на часть времени. Замена не обязательна:
+ * слот можно оставить пустым (с предупреждением о дыре) и поставить дежурного позже.
+ */
+export function RemoveDutyModal({ c, init, onClose, onReplace, onFill }: { c: Calendar; init: RemoveInit; onClose: () => void; onReplace: (x: AssignInit) => void; onFill: (x: AssignInit) => void }) {
+  const { state, updateCalendar, sendTg, toast } = useStore()
+  const tz = c.timezone || DEFAULT_TZ
+  const zl = tzLabel(tz)
+  const uidBase = useId()
+  const errId = `${uidBase}-err`
+  const byId = peopleById(state.people)
+  const name = (id?: string) => (id ? byId.get(id)?.name ?? '' : '')
+  const me = byId.get(state.currentUserId ?? '')
+  const layer = c.layers.find((l) => l.id === init.layerId)
+  const [opened] = useState(() => Date.now())
+  // уже идущую смену снимаем с текущей минуты
+  const whole = { s: Math.max(init.start, opened - (opened % 60_000)), e: init.end }
+  const [scope, setScope] = useState<'all' | 'part'>('all')
+  const [start, setStart] = useState(toInputTz(whole.s, tz))
+  const [end, setEnd] = useState(toInputTz(whole.e, tz))
+  const [note, setNote] = useState('')
+  const [fillId, setFillId] = useState('')
+  const [everywhere, setEverywhere] = useState(true)
+  const sT = scope === 'all' ? whole.s : fromInputTz(start, tz)
+  const eT = scope === 'all' ? whole.e : fromInputTz(end, tz)
+  const empty = Number.isNaN(sT) || Number.isNaN(eT)
+  const error = empty ? 'Укажите начало и окончание' : eT <= sT ? 'Окончание раньше начала'
+    : eT <= Date.now() ? 'Интервал уже прошёл' : (sT < whole.s - 60_000 || eT > whole.e) ? 'Интервал должен быть внутри смены'
+    : fillId && fillId === init.personId ? 'Нельзя поставить того же человека' : ''
+  const teamFirst = useMemo(() => teamFirstIds(c, state.people), [c, state.people])
+  // человек может дежурить в этом интервале ещё и в других слоях календаря
+  const otherLayers = useMemo(() => {
+    if (!init.layerId || empty || eT <= sT) return []
+    return c.layers.filter((l) => {
+      if (l.id === init.layerId || !l.participants.includes(init.personId)) return false
+      for (let t = sT; t < eT; t += HOUR / 4) if (layerOnCall(l, t + 1, tz).includes(init.personId)) return true
+      return false
+    })
+  }, [c.layers, init.layerId, init.personId, sT, eT, empty, tz])
+  const scopeLayer = otherLayers.length && everywhere ? undefined : init.layerId
+  const planned = useMemo(() => {
+    if (error) return null
+    const removal = makeRemoval({ personId: init.personId, layerId: scopeLayer, start: sT, end: eT, note })
+    const fill = fillId ? makeShift({ personId: fillId, start: sT, end: eT, note: `Вместо ${name(init.personId)} (снят)` }) : null
+    return { removal, fill }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [error, init.personId, scopeLayer, sT, eT, note, fillId])
+  const gap = useMemo(() => (planned ? addGap(c, [planned.removal, ...(planned.fill ? [planned.fill] : [])], Date.now()) : null), [c, planned])
+
+  const submit = () => {
+    if (!planned) return
+    const { removal, fill } = planned
+    updateCalendar(c.id, (cal) => ({ ...cal, shifts: [...cal.shifts, removal, ...(fill ? [fill] : [])] }))
+    const when = `С ${fmtDT(sT, tz)} по ${fmtDT(eT, tz)} ${zl} (${fmtDur(eT - sT)})`
+    sendTg({ toPersonId: init.personId, calendarId: c.id, kind: 'handover', text: `🚫 Вас сняли с дежурства\nКалендарь: «${c.name}»\n${when} — в это время алерты вам не придут.${note ? `\nПричина: ${note}` : ''}${fill ? `\nДежурит: ${name(fill.personId)}` : ''}\nСнял(а): ${me?.name ?? ''}` })
+    if (fill) sendTg({ toPersonId: fill.personId, calendarId: c.id, kind: 'signup', text: `📅 Вас поставили на дежурство\nКалендарь: «${c.name}»\n${when}\nВместо: ${name(init.personId)}\nНазначил(а): ${me?.name ?? ''}` })
+    const ids = [removal.id, fill?.id]
+    const undo = { label: 'Вернуть', onClick: () => updateCalendar(c.id, (cal) => ({ ...cal, shifts: cal.shifts.filter((x) => !ids.includes(x.id)) })) }
+    const text = `${name(init.personId)} снят(а) с дежурства${fill ? `, дежурит ${name(fill.personId)}` : gap ? ' — слот пустой' : ''}`
+    toast(text, fill ? undo : [undo, { label: 'Поставить другого', onClick: () => onFill({ start: sT, end: eT, fill: true }) }])
+    onClose()
+  }
+
+  const opt = (on: boolean) => `rounded-lg border px-3 py-2 text-left ${on ? 'border-accent bg-accent-soft' : 'border-line'}`
+  return (
+    <Modal title="Снять с дежурства" onClose={onClose} describedBy={gap && !fillId ? `${uidBase}-gap` : undefined}>
+      <div className="space-y-5">
+        <p className="text-sm text-muted">
+          <span className="font-medium text-ink">{name(init.personId)}</span> · {c.name}{layer ? ` · ${layer.name}` : ''}. Человек получит уведомление в Telegram.
+        </p>
+        <Field label="Когда">
+          <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              <button type="button" data-testid="remove-whole" aria-pressed={scope === 'all'} onClick={() => setScope('all')} className={opt(scope === 'all')}>
+                <span className="font-medium">Вся смена</span><div className="text-xs text-muted">{fmtDT(whole.s, tz)} — {fmtDT(whole.e, tz)}</div>
+              </button>
+              <button type="button" data-testid="remove-part" aria-pressed={scope === 'part'} onClick={() => setScope('part')} className={opt(scope === 'part')}>
+                <span className="font-medium">Часть смены</span><div className="text-xs text-muted">выбрать время</div>
+              </button>
+            </div>
+            {scope === 'part' && (
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label htmlFor={`${uidBase}-s`} className="mb-1 block text-xs text-muted">С, {zl}</label>
+                  <input id={`${uidBase}-s`} data-testid="remove-start" type="datetime-local" className={inputCls} value={start} onChange={(e) => setStart(e.target.value)} aria-describedby={error ? errId : undefined} />
+                </div>
+                <div>
+                  <label htmlFor={`${uidBase}-e`} className="mb-1 block text-xs text-muted">По, {zl}</label>
+                  <input id={`${uidBase}-e`} data-testid="remove-end" type="datetime-local" className={inputCls} value={end} onChange={(e) => setEnd(e.target.value)} aria-describedby={error ? errId : undefined} />
+                </div>
+              </div>
+            )}
+          </div>
+        </Field>
+        {otherLayers.length > 0 && (
+          <label className="flex items-start gap-2 rounded-lg bg-surface-2 px-3 py-2 text-sm">
+            <input type="checkbox" data-testid="remove-everywhere" className="mt-0.5" checked={everywhere} onChange={(e) => setEverywhere(e.target.checked)} />
+            <span>Снять и из других слоёв: {otherLayers.map((l) => `«${l.name}»`).join(', ')}<span className="block text-xs text-muted">в это время {name(init.personId)} дежурит и там</span></span>
+          </label>
+        )}
+        <Field label="Причина (необязательно)"><input className={inputCls} data-testid="remove-note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="например: больничный, отпуск" /></Field>
+        <Field label="Сразу поставить (необязательно)" hint="Можно оставить пустым и поставить дежурного позже — кликом по дыре на таймлайне.">
+          <PersonPicker testId="remove-fill" people={state.people} teamFirst={teamFirst} teamLabel="Команда календаря" value={fillId} onChange={setFillId}
+            exclude={[init.personId]} emptyLabel="Никого — оставить слот пустым" placeholder="Никого — оставить слот пустым" />
+        </Field>
+        {gap && !fillId && (
+          <div id={`${uidBase}-gap`} data-testid="gap-warning" className="rounded-lg border border-danger/30 bg-danger/5 px-3 py-2.5 text-sm">
+            <p className="leading-relaxed text-danger">После снятия в календаре «{c.name}» никто не дежурит: {fmtDT(gap.start, tz)} — {fmtDT(gap.end, tz)} {zl}. Алерты уровня 1 в это время никому не придут.</p>
+            <p className="mt-1.5 text-muted">
+              Можно оставить слот пустым или{' '}
+              <button type="button" className="font-medium text-accent hover:underline" data-testid="remove-to-replace" onClick={() => { onClose(); onReplace({ replacesPersonId: init.personId, start: sT, end: eT }) }}>заменить дежурного</button>.
+            </p>
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-4 pt-1">
+          <div className="text-sm text-muted">{error ? <span id={errId} role="alert" className="text-danger">{error}</span> : <>{fmtDur(eT - sT)} · с {fmtDT(sT, tz)} {zl}</>}</div>
+          <div className="flex gap-2">
+            <Btn variant="ghost" onClick={onClose}>Отмена</Btn>
+            <Btn variant={gap && !fillId ? 'danger' : 'primary'} onClick={submit} className="whitespace-nowrap" disabled={!!error}>{fillId ? 'Снять и поставить' : gap ? 'Снять и оставить пустым' : 'Снять с дежурства'}</Btn>
+          </div>
         </div>
       </div>
     </Modal>

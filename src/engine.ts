@@ -104,16 +104,39 @@ export interface OnCallEntry {
   replaced?: string
 }
 
+export const isRemoval = (s: Shift) => !!s.removesPersonId
+const inShift = (s: Shift, t: number) => t >= +new Date(s.start) && t < +new Date(s.end)
+// календари неизменяемые: список снятий считаем один раз на массив смен (горячий путь — расчёт «кто дежурит»)
+const NO_REMOVALS: Shift[] = []
+const removalsCache = new WeakMap<Shift[], Shift[]>()
+function removalsOf(c: Calendar): Shift[] {
+  if (!c.shifts.length) return NO_REMOVALS
+  let v = removalsCache.get(c.shifts)
+  if (!v) { v = c.shifts.filter(isRemoval); if (!v.length) v = NO_REMOVALS; removalsCache.set(c.shifts, v) }
+  return v
+}
+
+/** Снят ли человек с дежурства в слое в момент t. */
+export function removedAt(c: Calendar, personId: string, layerId: string, t: number): Shift | undefined {
+  const all = removalsOf(c)
+  return all.length ? all.find((s) => s.removesPersonId === personId && (!s.layerId || s.layerId === layerId) && inShift(s, t)) : undefined
+}
+
 /** Итоговое расписание календаря в момент t */
 export function calendarOnCall(c: Calendar, t: number): OnCallEntry[] {
   let entries: OnCallEntry[] = []
+  const all = removalsOf(c)
+  const removals = all.length ? all.filter((s) => inShift(s, t)) : all
   for (const l of c.layers) {
-    const ids = layerOnCall(l, t, c.timezone)
+    let ids = layerOnCall(l, t, c.timezone)
+    // снятые с дежурства не получают алерты; если слой опустел — в режиме приоритета работает следующий слой
+    if (removals.length) ids = ids.filter((id) => !removals.some((r) => r.removesPersonId === id && (!r.layerId || r.layerId === l.id)))
     if (!ids.length) continue
     for (const id of ids) entries.push({ personId: id, layerId: l.id, layerName: l.name, kind: l.kind })
     if (c.layerMode === 'priority') break // OneUptime: верхний слой, где кто-то есть, перекрывает нижние
   }
   for (const s of c.shifts) {
+    if (s.removesPersonId || !s.personId) continue
     const a = new Date(s.start).getTime()
     const b = new Date(s.end).getTime()
     if (t < a || t >= b) continue
@@ -142,18 +165,30 @@ export interface Segment {
   hatch?: boolean
 }
 
-/** Сегменты для таймлайна: почасовая выборка + склейка */
-export function sampleSegments(from: number, to: number, fn: (t: number) => string | null, step = HOUR): Segment[] {
+/** Точки выборки: сетка с шагом step плюс точные границы (например, начало снятия с дежурства). */
+export function samplePoints(from: number, to: number, step = HOUR, breaks: number[] = []): number[] {
+  const pts: number[] = []
+  for (let t = from; t < to; t += step) pts.push(t)
+  if (!breaks.length) return pts
+  for (const x of breaks) if (x > from && x < to) pts.push(x)
+  return [...new Set(pts)].sort((x, y) => x - y)
+}
+
+/** Сегменты для таймлайна: почасовая выборка + склейка (+ точные границы breaks) */
+export function sampleSegments(from: number, to: number, fn: (t: number) => string | null, step = HOUR, breaks: number[] = []): Segment[] {
   const out: Segment[] = []
   let cur: Segment | null = null
-  for (let t = from; t < to; t += step) {
+  const pts = samplePoints(from, to, step, breaks)
+  for (let i = 0; i < pts.length; i++) {
+    const t = pts[i]
+    const next = i + 1 < pts.length ? pts[i + 1] : Math.min(to, t + step)
     const p = fn(t + 1)
     if (cur && cur.personId === p) {
-      cur.end = t + step
+      cur.end = next
       continue
     }
     if (cur) out.push(cur)
-    cur = p ? { start: t, end: t + step, personId: p } : null
+    cur = p ? { start: t, end: next, personId: p } : null
   }
   if (cur) out.push(cur)
   return out
@@ -203,7 +238,7 @@ export function personDutySpans(calendars: Calendar[], personId: string, from: n
     const replacedAt = (t: number) => c.shifts.some((s) => s.replacesPersonId === personId && t >= +new Date(s.start) && t < +new Date(s.end))
     for (const l of c.layers) {
       if (!l.participants.includes(personId)) continue
-      for (const s of sampleSegments(from, to, (t) => (replacedAt(t) || !layerOnCall(l, t, c.timezone).includes(personId) ? null : personId), step)) {
+      for (const s of sampleSegments(from, to, (t) => (replacedAt(t) || removedAt(c, personId, l.id, t) || !layerOnCall(l, t, c.timezone).includes(personId) ? null : personId), step)) {
         out.push({ start: s.start, end: s.end, personId, calendarId: c.id, calendarName: c.name, layerId: l.id, layerName: l.name, kind: l.kind })
       }
     }
@@ -353,19 +388,42 @@ export function calendarHandoff(layers: { handoffTime: string }[]) {
   return layers[0]?.handoffTime || '10:00'
 }
 
-/** Интервалы, где без этой смены в календаре никого не останется (только будущее). */
-export function shiftGap(c: Calendar, s: Shift, now: number): { start: number; end: number } | null {
-  const without = { ...c, shifts: c.shifts.filter((x) => x.id !== s.id) }
-  const a = Math.max(now, +new Date(s.start))
-  const b = +new Date(s.end)
+/** Первый и последний момент в [a, b), где в after никого нет, а в before кто-то был (шаг 15 минут, только будущее). */
+function newGap(before: Calendar, after: Calendar, a: number, b: number): { start: number; end: number } | null {
   let gs = -1
   let ge = -1
   for (let t = a; t < b; t += HOUR / 4) {
     const probe = t === a ? t + 1 : t
-    if (calendarOnCall(without, probe).length === 0 && calendarOnCall(c, probe).length > 0) {
+    if (calendarOnCall(after, probe).length === 0 && calendarOnCall(before, probe).length > 0) {
       if (gs < 0) gs = t
       ge = Math.min(b, t + HOUR / 4)
     }
   }
   return gs < 0 ? null : { start: gs, end: ge }
+}
+
+/** Интервалы, где без этой смены в календаре никого не останется (только будущее). */
+export function shiftGap(c: Calendar, s: Shift, now: number): { start: number; end: number } | null {
+  const without = { ...c, shifts: c.shifts.filter((x) => x.id !== s.id) }
+  return newGap(c, without, Math.max(now, +new Date(s.start)), +new Date(s.end))
+}
+
+/** Дыра, которая появится, если добавить смены (например, снятие с дежурства без замены). */
+export function addGap(c: Calendar, add: Shift[], now: number): { start: number; end: number } | null {
+  if (!add.length) return null
+  const a = Math.max(now, Math.min(...add.map((s) => +new Date(s.start))))
+  const b = Math.max(...add.map((s) => +new Date(s.end)))
+  return newGap(c, { ...c, shifts: [...c.shifts, ...add] }, a, b)
+}
+
+export interface RemovalInput { personId: string; layerId?: string; start: number; end: number; note?: string }
+/** Запись «снят с дежурства». personId пустой: дежурного в слоте нет, пока его не поставят. */
+export function makeRemoval(x: RemovalInput, now: number = Date.now()): Shift {
+  if (!x.personId) throw new Error('Не выбран дежурный')
+  if (!(x.end > x.start)) throw new Error('Окончание раньше начала')
+  return {
+    id: uid(), personId: '', removesPersonId: x.personId, layerId: x.layerId || undefined,
+    start: new Date(x.start).toISOString(), end: new Date(x.end).toISOString(),
+    note: x.note?.trim() || undefined, createdAt: new Date(now).toISOString(),
+  }
 }

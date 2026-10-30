@@ -132,7 +132,7 @@ export default function App() {
           {toasts.map((t) => (
             <div key={t.id} className="popover-in flex items-center gap-4 rounded-lg border border-line bg-surface px-4 py-2.5 text-sm shadow-card">
               <span>{t.text}</span>
-              {t.action && <button type="button" className="font-medium text-accent hover:underline" onClick={() => { t.action!.onClick(); dismissToast(t.id) }}>{t.action.label}</button>}
+              {t.actions.map((a) => <button key={a.label} type="button" className="font-medium text-accent hover:underline" onClick={() => { a.onClick(); dismissToast(t.id) }}>{a.label}</button>)}
             </div>
           ))}
         </div>,

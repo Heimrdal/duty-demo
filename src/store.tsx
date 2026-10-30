@@ -18,7 +18,7 @@ function load(): State {
 }
 
 export interface ToastAction { label: string; onClick: () => void }
-export interface Toast { id: string; text: string; action?: ToastAction }
+export interface Toast { id: string; text: string; actions: ToastAction[] }
 
 interface Ctx {
   state: State
@@ -28,7 +28,7 @@ interface Ctx {
   reset: () => void
   /** Переключить демо-набор. Локальные изменения сбрасываются. */
   setDataset: (d: Dataset) => void
-  toast: (text: string, action?: ToastAction) => void
+  toast: (text: string, action?: ToastAction | ToastAction[]) => void
   dismissToast: (id: string) => void
   toasts: Toast[]
 }
@@ -53,11 +53,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const sendTg = useCallback((m: Omit<TgMessage, 'id' | 'ts'>) =>
     setState((s) => ({ ...s, messages: [...s.messages, { ...m, id: uid(), ts: new Date().toISOString() }] })), [])
   const dismissToast = useCallback((id: string) => setToasts((t) => t.filter((x) => x.id !== id)), [])
-  const toast = useCallback((text: string, action?: ToastAction) => {
+  const toast = useCallback((text: string, action?: ToastAction | ToastAction[]) => {
     const id = uid()
-    setToasts((t) => [...t, { id, text, action }])
+    const actions = action ? (Array.isArray(action) ? action : [action]) : []
+    setToasts((t) => [...t, { id, text, actions }])
     // с кнопкой «Вернуть» тост живёт дольше, чтобы успеть нажать
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), action ? 8000 : 3500)
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), actions.length ? 8000 : 3500)
   }, [])
   const reset = useCallback(() => {
     setState((old) => ({ ...initialState(Date.now(), old.dataset ?? 'small'), currentUserId: old.currentUserId }))
