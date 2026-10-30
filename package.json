@@ -8,7 +8,9 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "build:single": "tsc -b && vite build --mode single && cp dist-single/index.html oncall-demo.html"
+    "build:single": "tsc -b && vite build --mode single && cp dist-single/index.html oncall-demo.html",
+    "test": "vitest run",
+    "test:tz": "for z in UTC Europe/Moscow Europe/Berlin Asia/Vladivostok; do echo \"TZ=$z\"; TZ=$z vitest run || exit 1; done"
   },
   "dependencies": {
     "react": "^19.3.1",
@@ -25,6 +27,7 @@
     "tailwindcss": "^4.3.3",
     "typescript": "~7.0.2",
     "vite": "^8.3.5",
-    "vite-plugin-singlefile": "^2.3.4"
+    "vite-plugin-singlefile": "^2.3.4",
+    "vitest": "^5.0.5"
   }
 }
