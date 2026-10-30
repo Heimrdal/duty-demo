@@ -1,5 +1,6 @@
 import { addDays, isoDate, startOfDay, uid } from './engine'
-import type { Calendar, NotifySettings, Person, State, TgMessage } from './types'
+import { makeLargePart } from './bigdata'
+import type { Calendar, Dataset, NotifySettings, Person, State, TgMessage } from './types'
 
 const P = (id: string, name: string, title: string, orgUnit: string, managerId: string | undefined, tg: string, phone: string): Person => ({
   id, name, title, orgUnit, teams: [orgUnit], managerId, telegram: '@' + tg, phone, email: `${tg.replace(/_/g, '.')}@bank.example`,
@@ -100,9 +101,9 @@ export function makeCalendars(now: number = Date.now()): Calendar[] {
   ]
 }
 
-export function makeNotify(): Record<string, NotifySettings> {
+export function makeNotify(people: Person[] = PEOPLE): Record<string, NotifySettings> {
   const r: Record<string, NotifySettings> = {}
-  for (const p of PEOPLE) r[p.id] = { telegram: p.telegram, chatLinked: p.id !== 'u-sbp2', onShiftStart: true, beforeShift: '1h', onHandover: true, onEscalation: true, quietHours: false }
+  for (const p of people) r[p.id] = { telegram: p.telegram, chatLinked: p.id !== 'u-sbp2', onShiftStart: true, beforeShift: '1h', onHandover: true, onEscalation: true, quietHours: false }
   return r
 }
 
@@ -118,8 +119,15 @@ export function makeMessages(now: number = Date.now()): TgMessage[] {
 
 export const STATE_VERSION = 4
 
-export function initialState(now: number = Date.now()): State {
-  return { version: STATE_VERSION, currentUserId: null, people: PEOPLE.map((p) => ({ ...p, teams: [...p.teams] })), calendars: makeCalendars(now), notify: makeNotify(), messages: makeMessages(now) }
+export function initialState(now: number = Date.now(), dataset: Dataset = 'small'): State {
+  const people = PEOPLE.map((p) => ({ ...p, teams: [...p.teams] }))
+  const calendars = makeCalendars(now)
+  if (dataset === 'large') {
+    const big = makeLargePart(people, now)
+    people.push(...big.people)
+    calendars.push(...big.calendars)
+  }
+  return { version: STATE_VERSION, dataset, currentUserId: null, people, calendars, notify: makeNotify(people), messages: makeMessages(now) }
 }
 
 type LegacyPerson = Omit<Person, 'orgUnit' | 'teams'> & { team?: string; orgUnit?: string; teams?: string[] }
@@ -144,5 +152,5 @@ export function migrateState(raw: unknown): State | null {
       : [{ id: uid(), target: 'oncall' as const, delayMin: 0 }, ...c.escalation]
     return { ...c, timezone: c.timezone || 'Europe/Moscow', escalation: escalation.map((x, i) => (i === 0 ? { ...x, delayMin: 0 } : x)) }
   })
-  return { ...s, version: STATE_VERSION, people, calendars }
+  return { ...s, version: STATE_VERSION, dataset: s.dataset ?? 'small', people, calendars }
 }

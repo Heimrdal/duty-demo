@@ -101,7 +101,11 @@ export function Modal({ title, children, onClose, wide, describedBy }: { title: 
     first.focus()
     const key = (e: KeyboardEvent) => {
       if (openModals[openModals.length - 1] !== box) return
-      if (e.key === 'Escape') { e.stopPropagation(); closeRef.current(); return }
+      if (e.key === 'Escape') {
+        // открытый список выбора сотрудника сам закрывается по Esc, окно остаётся
+        if ((e.target as HTMLElement | null)?.closest?.('[data-esc-own="true"]')) return
+        e.stopPropagation(); closeRef.current(); return
+      }
       if (e.key !== 'Tab') return
       const items = [...box.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((x) => x.offsetParent !== null || x === document.activeElement)
       if (!items.length) { e.preventDefault(); box.focus(); return }
@@ -146,7 +150,7 @@ export function Field({ label, children, hint, error }: { label: string; childre
   const hintId = hint ? `${id}-hint` : undefined
   const errId = error ? `${id}-err` : undefined
   const describedBy = [hintId, errId].filter(Boolean).join(' ') || undefined
-  const single = isValidElement(children) && (typeof children.type === 'string' ? CONTROL_TAGS.has(children.type) : children.type === LeadSelect)
+  const single = isValidElement(children) && (typeof children.type === 'string' ? CONTROL_TAGS.has(children.type) : !!(children.type as { isControl?: boolean }).isControl)
   if (single) {
     const el = children as ReactElement<ControlProps>
     const ctlId = el.props.id ?? `${id}-ctl`
@@ -279,29 +283,6 @@ export function barRect(el: Element) {
   return { left: r.left, top: r.top, bottom: r.bottom }
 }
 
-export function LeadSelect({ people, teamFirst, value, onChange, allowEmpty = true, testId, ...aria }: {
-  people: Person[]
-  teamFirst: string[]
-  value: string
-  onChange: (id: string) => void
-  allowEmpty?: boolean
-  testId?: string
-  id?: string
-  'aria-describedby'?: string
-}) {
-  const prefer = new Set(teamFirst)
-  const head = people.filter((p) => prefer.has(p.id))
-  const rest = people.filter((p) => !prefer.has(p.id))
-  const opt = (p: Person) => <option key={p.id} value={p.id}>{p.name} — {p.title}</option>
-  return (
-    <select {...aria} data-testid={testId} className={inputCls} value={value} onChange={(e) => onChange(e.target.value)}>
-      {allowEmpty && <option value="">Выберите</option>}
-      {head.length > 0 && <optgroup label="Сначала команда">{head.map(opt)}</optgroup>}
-      {rest.length > 0 && <optgroup label={head.length ? 'Остальные сотрудники' : 'Сотрудники'}>{rest.map(opt)}</optgroup>}
-    </select>
-  )
-}
-
 export function Legend() {
   return (
     <div className="space-y-3 text-sm">
@@ -379,7 +360,7 @@ export function PersonPill({ p, extra }: { p: Person; extra?: ReactNode }) {
 
 const telHref = (phone: string) => 'tel:' + phone.replace(/[^\d+]/g, '')
 
-async function copyText(text: string) {
+export async function copyText(text: string) {
   try {
     await navigator.clipboard.writeText(text)
     return true

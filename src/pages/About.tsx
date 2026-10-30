@@ -1,3 +1,4 @@
+import { DatasetToggle } from '../DatasetToggle'
 import { Card, Legend } from '../ui'
 
 const rows: [string, string, string][] = [
@@ -21,6 +22,10 @@ export function About() {
         <h1 className="text-2xl font-semibold">О демо</h1>
         <p className="mt-1 max-w-xl text-sm text-muted">Только фронтенд. Данные в localStorage. Вход и Telegram — имитация. Светлая и тёмная тема запоминаются в браузере.</p>
       </header>
+      <Card className="p-5">
+        <DatasetToggle />
+        <p className="mt-2 max-w-xl text-sm text-muted">Большой набор — 300 команд, ~1500 сотрудников из 25 подразделений, сгенерирован детерминированно. Нужен, чтобы проверить поиск, избранное и фильтры на масштабе банка.</p>
+      </Card>
       <Card className="p-5">
         <h3 className="mb-3 font-medium">Опора на OneUptime</h3>
         <table className="w-full text-sm">

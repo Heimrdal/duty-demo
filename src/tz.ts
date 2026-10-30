@@ -30,20 +30,40 @@ function partsFmt(tz: string) {
   return f
 }
 
+/** Смещение зоны, посчитанное через Intl (медленно). Вызывается раз на 15-минутный интервал. */
+function rawOffset(t: number, tz: string) {
+  const o: Record<string, number> = {}
+  for (const p of partsFmt(tz).formatToParts(new Date(t))) if (p.type !== 'literal') o[p.type] = Number(p.value)
+  const asUtc = Date.UTC(o.year, o.month - 1, o.day, o.hour === 24 ? 0 : o.hour, o.minute, o.second)
+  return asUtc - Math.floor(t / 1000) * 1000
+}
+
+const Q = 15 * 60_000
+const offCache = new Map<string, Map<number, number>>()
+/**
+ * Смещение зоны относительно UTC в момент t, мс.
+ * Кэш по 15-минутным интервалам: переходы на летнее время всегда на границе четверти часа,
+ * а Intl.formatToParts — самая дорогая часть расчёта расписания.
+ */
+export function tzOffset(t: number, tz: string) {
+  let m = offCache.get(tz)
+  if (!m) { m = new Map(); offCache.set(tz, m) }
+  const b = Math.floor(t / Q)
+  let off = m.get(b)
+  if (off === undefined) {
+    if (m.size > 200_000) m.clear()
+    off = rawOffset(b * Q, tz)
+    m.set(b, off)
+  }
+  return off
+}
+
 export interface ZParts { y: number; m: number; d: number; h: number; min: number; s: number }
 
 /** Настенное время момента t в зоне tz. m — 1..12. */
 export function zparts(t: number, tz: string): ZParts {
-  const o: Record<string, number> = {}
-  for (const p of partsFmt(tz).formatToParts(new Date(t))) if (p.type !== 'literal') o[p.type] = Number(p.value)
-  return { y: o.year, m: o.month, d: o.day, h: o.hour === 24 ? 0 : o.hour, min: o.minute, s: o.second }
-}
-
-/** Смещение зоны относительно UTC в момент t, мс. */
-export function tzOffset(t: number, tz: string) {
-  const p = zparts(t, tz)
-  const asUtc = Date.UTC(p.y, p.m - 1, p.d, p.h, p.min, p.s)
-  return asUtc - Math.floor(t / 1000) * 1000
+  const x = new Date(t + tzOffset(t, tz))
+  return { y: x.getUTCFullYear(), m: x.getUTCMonth() + 1, d: x.getUTCDate(), h: x.getUTCHours(), min: x.getUTCMinutes(), s: x.getUTCSeconds() }
 }
 
 /** Настенное время в зоне → абсолютный момент. Для несуществующего (переход на летнее) берётся время после перехода. */

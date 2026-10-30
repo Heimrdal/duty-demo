@@ -1,17 +1,33 @@
-import { useState } from 'react'
-import { calendarOnCall, uid } from '../engine'
-import { useNow, useStore } from '../store'
+import { useMemo, useState } from 'react'
+import { onCallAt } from '../cache'
+import { CalendarFilters, Pager, StarButton } from '../CalendarList'
+import { uid } from '../engine'
+import { useFavorites } from '../favorites'
+import { calendarOrgUnit, EMPTY_FILTER, filterCalendars, type CalFilter } from '../search'
+import { peopleById, useNow, useStore } from '../store'
 import { DEFAULT_TZ, TZ_OPTIONS } from '../tz'
-import { Avatar, Btn, Card, Empty, Field, inputCls, LeadSelect, Modal, TYPE_META } from '../ui'
+import { PersonPicker } from '../PersonPicker'
+import { Avatar, Btn, Card, Empty, Field, inputCls, Modal, TYPE_META } from '../ui'
 import type { Calendar, CalendarType } from '../types'
 
-export function Calendars() {
+const PAGE = 24
+
+export function Calendars({ initialQuery = '' }: { initialQuery?: string }) {
   const { state } = useStore()
   const now = useNow()
+  const me = state.currentUserId
+  const { isFav, toggle } = useFavorites(me)
   const [create, setCreate] = useState(false)
-  const [q, setQ] = useState('')
-  const byId = (id: string) => state.people.find((p) => p.id === id)
-  const list = state.calendars.filter((c) => (c.name + c.product + c.team).toLowerCase().includes(q.toLowerCase()))
+  const [f, setF] = useState<CalFilter>({ ...EMPTY_FILTER, q: initialQuery })
+  const [page, setPage] = useState(0)
+  const byId = peopleById(state.people)
+  const orgOf = useMemo(() => {
+    const m = new Map(state.calendars.map((c) => [c.id, calendarOrgUnit(c, peopleById(state.people))]))
+    return (c: Calendar) => m.get(c.id) ?? ''
+  }, [state.calendars, state.people])
+  const orgs = useMemo(() => [...new Set(state.calendars.map(orgOf))].filter(Boolean).sort((a, b) => a.localeCompare(b, 'ru')), [state.calendars, orgOf])
+  const list = useMemo(() => filterCalendars(state.calendars, f, now, orgOf), [state.calendars, f, Math.floor(now / 60000), orgOf]) // eslint-disable-line
+  const cur = Math.min(page, Math.max(0, Math.ceil(list.length / PAGE) - 1))
 
   return (
     <div className="space-y-8">
@@ -22,22 +38,23 @@ export function Calendars() {
         </div>
         <Btn onClick={() => setCreate(true)}>Новый календарь</Btn>
       </header>
-      <input aria-label="Поиск календарей" type="search" className={`${inputCls} max-w-sm`} placeholder="Поиск по названию, продукту, команде" value={q} onChange={(e) => setQ(e.target.value)} />
-      {list.length === 0 ? <Empty title="Ничего не нашлось" text="Попробуйте другое название или создайте календарь." /> : (
+      <CalendarFilters f={f} set={(x) => { setF(x); setPage(0) }} orgs={orgs} />
+      {list.length === 0 ? <Empty title="Ничего не нашлось" text="Попробуйте другое название, сбросьте фильтры или создайте календарь." /> : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {list.map((c) => {
-            const on = calendarOnCall(c, now)
+          {list.slice(cur * PAGE, cur * PAGE + PAGE).map((c) => {
+            const on = onCallAt(c, now)
             return (
-              <a key={c.id} href={`#/calendars/${c.id}`} className="block">
+              <a key={c.id} href={`#/calendars/${c.id}`} className="block" data-testid="calendar-card">
                 <Card className="h-full p-5 hover:border-line-strong">
                   <div className="flex items-center gap-2">
                     <span className="h-2 w-2 rounded-full" style={{ background: TYPE_META[c.type].color }} />
-                    <h3 className="font-medium">{c.name}</h3>
+                    <h3 className="flex-1 font-medium">{c.name}</h3>
+                    <StarButton on={isFav(c.id)} name={c.name} onToggle={() => toggle(c.id)} className="-my-1 -mr-2" />
                   </div>
                   <p className="mt-2 line-clamp-2 text-sm text-muted">{c.description || c.product}</p>
                   <div className="mt-4 flex items-center justify-between gap-3">
-                    <div className="flex -space-x-1.5">{on.slice(0, 5).map((e) => <span key={e.personId} className="rounded-full ring-2 ring-surface"><Avatar p={byId(e.personId)} size={26} /></span>)}{!on.length && <span className="text-xs text-danger">никто не дежурит</span>}</div>
-                    <span className="text-xs text-faint">{c.team}</span>
+                    <div className="flex -space-x-1.5">{on.slice(0, 5).map((e) => <span key={e.personId} className="rounded-full ring-2 ring-surface"><Avatar p={byId.get(e.personId)} size={26} /></span>)}{!on.length && <span className="text-xs text-danger">никто не дежурит</span>}</div>
+                    <span className="truncate text-xs text-faint">{c.team !== c.name ? c.team : orgOf(c)}</span>
                   </div>
                 </Card>
               </a>
@@ -45,6 +62,7 @@ export function Calendars() {
           })}
         </div>
       )}
+      <Pager page={cur} total={list.length} size={PAGE} set={setPage} />
       {create && <CreateCalendar onClose={() => setCreate(false)} />}
     </div>
   )
@@ -118,7 +136,7 @@ function CreateCalendar({ onClose }: { onClose: () => void }) {
           </div>
         </Field>
         <Field label="Лид группы" hint="Обязательное поле. Сверху — люди выбранной команды.">
-          <LeadSelect testId="lead-select" people={state.people} teamFirst={willJoin ? [...new Set([me.id, ...teamPeople])] : teamPeople} value={leadId} onChange={setLeadId} />
+          <PersonPicker testId="lead-select" people={state.people} teamFirst={willJoin ? [...new Set([me.id, ...teamPeople])] : teamPeople} teamLabel="Выбранная команда" value={leadId} onChange={setLeadId} />
         </Field>
         <Field label="Слои" hint="Параллельно — дежурят все слои. По приоритету верхний перекрывает нижние.">
           <select className={inputCls} value={mode} onChange={(e) => setMode(e.target.value as 'parallel' | 'priority')}><option value="parallel">Параллельно</option><option value="priority">По приоритету</option></select>

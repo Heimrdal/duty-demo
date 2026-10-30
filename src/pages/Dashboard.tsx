@@ -1,26 +1,80 @@
-import { useMemo, useState } from 'react'
-import { calendarOnCall, DAY, fmtDT, fmtDur, HOUR, nextHandoff, sampleSegments, teamCoverage } from '../engine'
-import { useNow, useStore } from '../store'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { hasWeekGap, involves, onCallAt, onCallIndex } from '../cache'
+import { CalendarFilters, CalendarRow, OnCallCard, Pager } from '../CalendarList'
+import { calendarOnCall, DAY, fmtDT, fmtDur, HOUR, sampleSegments } from '../engine'
+import { useFavorites } from '../favorites'
+import { calendarOrgUnit, EMPTY_FILTER, filterCalendars, type CalFilter } from '../search'
+import { peopleById, useNow, useStore } from '../store'
 import { DEFAULT_TZ, fmtTz, tzLabel } from '../tz'
-import { Avatar, Card, ContactActions, EscalationChain, TYPE_META } from '../ui'
-import type { CalendarType } from '../types'
+import { TYPE_META } from '../ui'
+import type { Calendar, CalendarType } from '../types'
+
+/** До стольких календарей дашборд показывает все карточки сразу, как раньше. */
+export const FEW_CALENDARS = 8
+const PAGE = 20
+const MY_LIMIT = 6
+
+/** Имена, только если их мало; иначе — число. */
+function namesOrCount(cals: Calendar[]) {
+  return cals.length <= 3 ? cals.map((c) => c.name).join(', ') : `${cals.length} календарей`
+}
 
 export function Dashboard() {
   const { state } = useStore()
   const now = useNow()
-  const [filter, setFilter] = useState<CalendarType | 'all'>('all')
-  const [openChain, setOpenChain] = useState<string | null>(null)
-  const me = state.people.find((p) => p.id === state.currentUserId)!
-  const byId = (id: string) => state.people.find((p) => p.id === id)
+  const me = peopleById(state.people).get(state.currentUserId!)!
+  const { favorites, isFav, toggle } = useFavorites(me.id)
+  const few = state.calendars.length <= FEW_CALENDARS
+  const [type, setType] = useState<CalendarType | 'all'>('all')
+  const [f, setF] = useState<CalFilter>(EMPTY_FILTER)
+  const [page, setPage] = useState(0)
+  const [showAllMine, setShowAllMine] = useState(false)
+  const listRef = useRef<HTMLElement>(null)
 
-  const rows = state.calendars.filter((c) => filter === 'all' || c.type === filter).map((c) => ({ c, entries: calendarOnCall(c, now) }))
-  const totalOnCall = new Set(state.calendars.flatMap((c) => calendarOnCall(c, now).map((e) => e.personId))).size
-  const gaps = state.calendars.filter((c) => calendarOnCall(c, now).length === 0)
-  const weekGaps = useMemo(() => state.calendars.filter((c) => teamCoverage([c], now, now + 7 * DAY).some((s) => s.gap)), [state.calendars, Math.floor(now / HOUR)]) // eslint-disable-line
+  const idx = onCallIndex(state.calendars, now)
+  const hourKey = Math.floor(now / HOUR)
+  // дыры за 7 дней: для маленького набора сразу, для большого — после первой отрисовки, чтобы не тормозить экран
+  const [weekGaps, setWeekGaps] = useState<Calendar[] | null>(() => (few ? state.calendars.filter((c) => hasWeekGap(c, now)) : null))
+  useEffect(() => {
+    if (few) { setWeekGaps(state.calendars.filter((c) => hasWeekGap(c, now))); return }
+    const t = setTimeout(() => setWeekGaps(state.calendars.filter((c) => hasWeekGap(c, now))), 30)
+    return () => clearTimeout(t)
+  }, [state.calendars, hourKey, few]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const mine = useMemo(() => state.calendars.flatMap((c) =>
+  const mine = useMemo(() => state.calendars.filter((c) => involves(c, me.id)).flatMap((c) =>
     sampleSegments(Math.floor((now - DAY) / HOUR) * HOUR, now + 21 * DAY, (t) => (calendarOnCall(c, t).some((e) => e.personId === me.id) ? me.id : null), HOUR)
       .filter((s) => s.end > now).map((s) => ({ ...s, c }))).sort((a, b) => a.start - b.start).slice(0, 6), [state.calendars, me.id, Math.floor(now / 600000)]) // eslint-disable-line
+
+  const orgOf = useMemo(() => {
+    const byId = peopleById(state.people)
+    const m = new Map(state.calendars.map((c) => [c.id, calendarOrgUnit(c, byId)]))
+    return (c: Calendar) => m.get(c.id) ?? ''
+  }, [state.calendars, state.people])
+  const orgs = useMemo(() => [...new Set(state.calendars.map(orgOf))].filter(Boolean).sort((a, b) => a.localeCompare(b, 'ru')), [state.calendars, orgOf])
+
+  const favCals = state.calendars.filter((c) => favorites.includes(c.id))
+  const myCals = useMemo(() => state.calendars.filter((c) => me.teams.includes(c.team) || c.leadId === me.id || c.ownerId === me.id), [state.calendars, me])
+  const myRest = myCals.filter((c) => !favorites.includes(c.id))
+  const filtered = useMemo(() => (few ? [] : filterCalendars(state.calendars, f, now, orgOf)), [few, state.calendars, f, Math.floor(now / 60000), orgOf]) // eslint-disable-line
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE))
+  const curPage = Math.min(page, pageCount - 1)
+
+  const setFilter = (next: CalFilter) => { setF(next); setPage(0) }
+  const showGaps = (coverage: 'now' | 'week') => {
+    setFilter({ ...EMPTY_FILTER, coverage })
+    requestAnimationFrame(() => listRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+  }
+
+  const gapsNow = idx.gapsNow
+  const gapHint = gapsNow.length
+    ? (gapsNow.length <= 3 ? `прямо сейчас: ${namesOrCount(gapsNow)}` : 'прямо сейчас')
+    : weekGaps === null ? 'проверяем ближайшие 7 дней…'
+    : weekGaps.length ? `сейчас все на смене · за 7 дней дыры: ${namesOrCount(weekGaps)}` : 'прямо сейчас и на 7 дней вперёд дыр нет'
+  const gapAction = gapsNow.length ? { label: gapsNow.length <= 3 && few ? null : 'Показать', on: () => showGaps('now') }
+    : weekGaps?.length ? { label: weekGaps.length <= 3 && few ? null : 'Показать', on: () => showGaps('week') } : null
+
+  // маленький набор: все карточки, как раньше
+  const smallRows = few ? state.calendars.filter((c) => (type === 'all' || c.type === type) && (f.coverage === 'all' || (f.coverage === 'now' ? onCallAt(c, now).length === 0 : hasWeekGap(c, now)))) : []
 
   return (
     <div className="space-y-10">
@@ -31,58 +85,67 @@ export function Dashboard() {
 
       <div className="grid grid-cols-2 gap-8 md:grid-cols-4">
         <Stat k="Календари" v={String(state.calendars.length)} />
-        <Stat k="Сейчас на смене" v={String(totalOnCall)} />
-        <Stat k="Сейчас без покрытия" v={String(gaps.length)} danger={gaps.length > 0} wrap hint={gaps.length ? `прямо сейчас: ${gaps.map((g) => g.name).join(', ')}` : weekGaps.length ? `сейчас все на смене · за 7 дней дыры: ${weekGaps.map((c) => c.name).join(', ')}` : 'прямо сейчас и на 7 дней вперёд дыр нет'} />
+        <Stat k="Сейчас на смене" v={String(idx.totalOnCall)} />
+        <Stat k="Сейчас без покрытия" v={String(gapsNow.length)} danger={gapsNow.length > 0} wrap hint={gapHint}
+          action={gapAction?.label ? <button type="button" data-testid="gaps-link" className="font-medium text-accent hover:underline" onClick={gapAction.on}>{gapAction.label}</button> : undefined} />
         <Stat k="Моя смена" v={mine[0] ? (mine[0].start <= now ? 'Сейчас' : `${fmtDT(mine[0].start, mine[0].c.timezone)} ${tzLabel(mine[0].c.timezone)}`) : 'Нет'} hint={mine[0]?.c.name} />
       </div>
 
-      <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm">
-        {(['all', 'sitcenter', 'monitoring', 'product', 'infra'] as const).map((t) => (
-          <button key={t} aria-pressed={filter === t} onClick={() => setFilter(t)} className={filter === t ? 'font-medium text-ink' : 'text-muted hover:text-ink'}>
-            {t === 'all' ? 'Все' : TYPE_META[t].label}
-          </button>
-        ))}
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        {rows.map(({ c, entries }) => {
-          const lead = byId(c.leadId)
-          const handoffs = c.layers.map((l) => nextHandoff(l, now, c.timezone))
-          const nextH = handoffs.length ? Math.min(...handoffs) : null
-          return (
-            <Card key={c.id} className="flex flex-col">
-              <div className="flex items-start gap-3 px-5 pt-5">
-                <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full" style={{ background: TYPE_META[c.type].color }} />
-                <div className="min-w-0 flex-1">
-                  <a href={`#/calendars/${c.id}`} className="text-base font-medium hover:text-accent">{c.name}</a>
-                  <div className="mt-0.5 truncate text-sm text-muted">{c.product}</div>
+      {few ? (
+        <section ref={listRef} className="space-y-6">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
+            {(['all', 'sitcenter', 'monitoring', 'product', 'infra'] as const).map((t) => (
+              <button key={t} aria-pressed={type === t} onClick={() => setType(t)} className={type === t ? 'font-medium text-ink' : 'text-muted hover:text-ink'}>
+                {t === 'all' ? 'Все' : TYPE_META[t].label}
+              </button>
+            ))}
+            {f.coverage !== 'all' && (
+              <span data-testid="gaps-chip" className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-2.5 py-0.5 text-xs text-ink">
+                {f.coverage === 'now' ? 'Только без дежурного' : 'Только с дырами за 7 дней'}
+                <button type="button" aria-label="Сбросить фильтр покрытия" className="text-muted hover:text-ink" onClick={() => setFilter(EMPTY_FILTER)}>×</button>
+              </span>
+            )}
+          </div>
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            {smallRows.map((c) => <OnCallCard key={c.id} c={c} now={now} fav={isFav(c.id)} onFav={() => toggle(c.id)} />)}
+          </div>
+        </section>
+      ) : (
+        <>
+          {favCals.length > 0 && (
+            <section aria-labelledby="fav-h">
+              <h2 id="fav-h" className="mb-3 text-sm font-medium">Избранное <span className="font-normal text-faint">{favCals.length}</span></h2>
+              <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+                {favCals.map((c) => <OnCallCard key={c.id} c={c} now={now} fav onFav={() => toggle(c.id)} />)}
+              </div>
+            </section>
+          )}
+          <section aria-labelledby="mine-h">
+            <h2 id="mine-h" className="mb-1 text-sm font-medium">Мои команды <span className="font-normal text-faint">{myRest.length}</span></h2>
+            <p className="mb-3 text-xs text-muted">Где вы в составе, лид или владелец. Звёздочка добавляет календарь в избранное.</p>
+            {myRest.length === 0 ? <p className="text-sm text-muted">{myCals.length ? 'Все ваши календари уже в избранном.' : 'Вы пока не состоите в дежурных командах. Найдите нужную через поиск (Ctrl+K) или в списке ниже.'}</p> : (
+              <>
+                <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+                  {(showAllMine ? myRest : myRest.slice(0, MY_LIMIT)).map((c) => <OnCallCard key={c.id} c={c} now={now} fav={false} onFav={() => toggle(c.id)} />)}
                 </div>
-              </div>
-              <div className="flex-1 space-y-3 px-5 py-4">
-                {entries.length === 0 && <p className="text-sm text-danger">Сейчас никто не дежурит. Алерт уйдёт лиду.</p>}
-                {entries.map((e) => {
-                  const p = byId(e.personId)!
-                  return (
-                    <div key={e.personId} className="flex items-center gap-3">
-                      <Avatar p={p} size={32} />
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium">{p.name}{p.id === me.id && <span className="font-normal text-muted"> · вы</span>}</div>
-                        <div className="truncate text-xs text-muted">{e.layerName}{e.replaced && ` · вместо ${byId(e.replaced)?.name}`} · {p.phone}</div>
-                      </div>
-                      <ContactActions p={p} />
-                    </div>
-                  )
-                })}
-                <p className="text-xs text-faint">Лид {lead?.name}{nextH ? ` · передача ${fmtDT(nextH, c.timezone)} ${tzLabel(c.timezone)}` : ''}</p>
-                <button className="text-sm text-muted hover:text-ink" onClick={() => setOpenChain(openChain === c.id ? null : c.id)}>
-                  {openChain === c.id ? 'Скрыть эскалацию' : 'Эскалация'}
-                </button>
-                {openChain === c.id && <EscalationChain c={c} people={state.people} t={now} calendars={state.calendars} compact />}
-              </div>
-            </Card>
-          )
-        })}
-      </div>
+                {myRest.length > MY_LIMIT && <button type="button" className="mt-3 text-sm text-accent hover:underline" onClick={() => setShowAllMine(!showAllMine)}>{showAllMine ? 'Свернуть' : `Показать все ${myRest.length}`}</button>}
+              </>
+            )}
+          </section>
+          <section ref={listRef} aria-labelledby="all-h" className="scroll-mt-6">
+            <div className="mb-3 flex items-baseline justify-between gap-3">
+              <h2 id="all-h" className="text-sm font-medium">Все календари <span className="font-normal text-faint" data-testid="all-count">{filtered.length === state.calendars.length ? state.calendars.length : `${filtered.length} из ${state.calendars.length}`}</span></h2>
+            </div>
+            <CalendarFilters f={f} set={setFilter} orgs={orgs} />
+            {filtered.length === 0 ? <p className="py-6 text-sm text-muted">Ничего не нашлось. Измените запрос или сбросьте фильтры.</p> : (
+              <ul className="mt-3 divide-y divide-line border-y border-line" aria-label="Календари">
+                {filtered.slice(curPage * PAGE, curPage * PAGE + PAGE).map((c) => <CalendarRow key={c.id} c={c} now={now} org={orgOf(c)} fav={isFav(c.id)} onFav={() => toggle(c.id)} />)}
+              </ul>
+            )}
+            <Pager page={curPage} total={filtered.length} size={PAGE} set={setPage} />
+          </section>
+        </>
+      )}
 
       <section>
         <h2 className="mb-3 text-sm font-medium">Мои дежурства</h2>
@@ -101,17 +164,16 @@ export function Dashboard() {
           </div>
         )}
       </section>
-
     </div>
   )
 }
 
-function Stat({ k, v, hint, danger, wrap }: { k: string; v: string; hint?: string; danger?: boolean; wrap?: boolean }) {
+function Stat({ k, v, hint, danger, wrap, action }: { k: string; v: string; hint?: string; danger?: boolean; wrap?: boolean; action?: ReactNode }) {
   return (
     <div>
       <div className="text-xs text-muted">{k}</div>
       <div className={`mt-1 text-2xl font-semibold tracking-tight ${danger ? 'text-danger' : ''}`}>{v}</div>
-      {hint && <div className={`mt-0.5 text-xs text-faint ${wrap ? 'leading-snug' : 'truncate'}`}>{hint}</div>}
+      {(hint || action) && <div className={`mt-0.5 text-xs text-faint ${wrap ? 'leading-snug' : 'truncate'}`} data-testid={wrap ? 'gaps-hint' : undefined}>{hint}{hint && action ? ' · ' : ''}{action}</div>}
     </div>
   )
 }

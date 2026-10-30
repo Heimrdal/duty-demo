@@ -2,10 +2,11 @@ import { useState } from 'react'
 import { addDays, fmtDT, fmtDur, layerOnCall, rotationLabel, shiftGap, startOfDay, uid } from '../engine'
 import { fmtTz, startOfMonthTz, TZ_OPTIONS, tzLabel } from '../tz'
 import { AssignDutyModal, LayerWizard, TakeDutyModal, type AssignInit } from '../forms'
-import { canCancelShift } from '../perm'
+import { canCancelShift, teamFirstIds } from '../perm'
 import { useNow, useScheduleAccess, useStore } from '../store'
 import { MonthGrid, Timeline, type BarTarget } from '../Timeline'
-import { Btn, Card, type BarAction, Empty, ESC_LABEL, EscalationChain, Field, inputCls, KindMark, LeadSelect, Menu, Modal, ScheduleLegend, teamHref, TYPE_META } from '../ui'
+import { PersonPicker } from '../PersonPicker'
+import { Btn, Card, type BarAction, Empty, ESC_LABEL, EscalationChain, Field, inputCls, KindMark, Menu, Modal, ScheduleLegend, teamHref, TYPE_META } from '../ui'
 import type { Calendar, CalendarType, EscTarget, Layer, Shift } from '../types'
 
 const TABS = [['schedule', 'Расписание'], ['layers', 'Слои'], ['escalation', 'Эскалация'], ['shifts', 'Дежурства'], ['settings', 'Настройки']] as const
@@ -222,6 +223,7 @@ function EscalationTab({ c, access }: { c: Calendar; access: Access }) {
   const { state, updateCalendar } = useStore()
   const now = useNow()
   const setSteps = (fn: (s: Calendar['escalation']) => Calendar['escalation']) => updateCalendar(c.id, (cal) => ({ ...cal, escalation: fn(cal.escalation) }))
+  const teamIds = teamFirstIds(c, state.people)
   return (
     <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
       <div>
@@ -241,9 +243,7 @@ function EscalationTab({ c, access }: { c: Calendar; access: Access }) {
                 </select>
               )}
               {s.target === 'person' && i > 0 && (
-                <select aria-label={`Уровень ${i + 1}: сотрудник`} className={`${inputCls} w-48`} value={s.personId ?? ''} onChange={(e) => setSteps((a) => a.map((x) => (x.id === s.id ? { ...x, personId: e.target.value } : x)))}>
-                  <option value="">Кто</option>{state.people.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
+                <PersonPicker className="w-56" aria-label={`Уровень ${i + 1}: сотрудник`} people={state.people} teamFirst={teamIds} emptyLabel="Кто" value={s.personId ?? ''} onChange={(id) => setSteps((a) => a.map((x) => (x.id === s.id ? { ...x, personId: id } : x)))} />
               )}
               {i > 0 && <span className="flex items-center gap-1 text-sm text-muted">через <input type="number" aria-label={`Уровень ${i + 1}: задержка, минут`} min={1} className={`${inputCls} w-16`} value={s.delayMin} onChange={(e) => setSteps((a) => a.map((x) => (x.id === s.id ? { ...x, delayMin: Math.max(1, +e.target.value) } : x)))} /> мин</span>}
               {i > 0 && access.canEdit && <button className="ml-auto text-faint hover:text-danger" aria-label={`Удалить уровень ${i + 1}`} onClick={() => setSteps((a) => a.filter((x) => x.id !== s.id))}>×</button>}
@@ -315,7 +315,7 @@ function SettingsTab({ c, access }: { c: Calendar; access: Access }) {
         <Field label="Тип"><select className={inputCls} value={c.type} onChange={(e) => set({ type: e.target.value as CalendarType })}>{(Object.keys(TYPE_META) as CalendarType[]).map((t) => <option key={t} value={t}>{TYPE_META[t].label}</option>)}</select></Field>
       </div>
       <div className="space-y-4">
-        <Field label="Лид группы"><LeadSelect allowEmpty={false} people={state.people} teamFirst={state.people.filter((p) => p.teams.includes(c.team)).map((p) => p.id)} value={c.leadId} onChange={(leadId) => set({ leadId })} /></Field>
+        <Field label="Лид группы"><PersonPicker testId="settings-lead" allowEmpty={false} people={state.people} teamFirst={state.people.filter((p) => p.teams.includes(c.team)).map((p) => p.id)} value={c.leadId} onChange={(leadId) => leadId && set({ leadId })} /></Field>
         <Field label="Сочетание слоёв"><select className={inputCls} value={c.layerMode} onChange={(e) => set({ layerMode: e.target.value as Calendar['layerMode'] })}><option value="parallel">Параллельно</option><option value="priority">По приоритету</option></select></Field>
         <Field label="Часовой пояс" hint="В этом поясе считаются передачи смен, дни недели и часы ограничений">
           <select className={inputCls} value={c.timezone} onChange={(e) => set({ timezone: e.target.value })}>

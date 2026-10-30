@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import { initialState, migrateState } from './data'
 import { uid } from './engine'
 import { canEditSchedule } from './perm'
-import type { Calendar, State, TgMessage } from './types'
+import type { Calendar, Dataset, Person, State, TgMessage } from './types'
 
 const KEY = 'oncall-demo-state-v3' // ключ прежний: внутри version, миграция в migrateState
 
@@ -26,6 +26,8 @@ interface Ctx {
   updateCalendar: (id: string, fn: (c: Calendar) => Calendar) => void
   sendTg: (m: Omit<TgMessage, 'id' | 'ts'>) => void
   reset: () => void
+  /** Переключить демо-набор. Локальные изменения сбрасываются. */
+  setDataset: (d: Dataset) => void
   toast: (text: string, action?: ToastAction) => void
   dismissToast: (id: string) => void
   toasts: Toast[]
@@ -37,7 +39,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<State>(load)
   const [toasts, setToasts] = useState<Toast[]>([])
   useEffect(() => {
-    try { localStorage.setItem(KEY, JSON.stringify(state)) } catch { /* ignore */ }
+    // большой набор весит ~1 МБ: сохраняем не на каждое изменение, а пачкой
+    const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)) } catch { /* ignore */ } }
+    if (state.dataset !== 'large') { save(); return }
+    const t = setTimeout(save, 250)
+    const flush = () => { clearTimeout(t); save() }
+    window.addEventListener('pagehide', flush)
+    return () => { clearTimeout(t); window.removeEventListener('pagehide', flush) }
   }, [state])
   const update = useCallback((fn: (s: State) => State) => setState(fn), [])
   const updateCalendar = useCallback((id: string, fn: (c: Calendar) => Calendar) =>
@@ -52,17 +60,30 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), action ? 8000 : 3500)
   }, [])
   const reset = useCallback(() => {
-    const s = initialState()
-    setState((old) => ({ ...s, currentUserId: old.currentUserId }))
+    setState((old) => ({ ...initialState(Date.now(), old.dataset ?? 'small'), currentUserId: old.currentUserId }))
   }, [])
-  return <StoreCtx.Provider value={{ state, update, updateCalendar, sendTg, reset, toast, dismissToast, toasts }}>{children}</StoreCtx.Provider>
+  const setDataset = useCallback((d: Dataset) => {
+    setState((old) => {
+      const s = initialState(Date.now(), d)
+      return { ...s, currentUserId: s.people.some((p) => p.id === old.currentUserId) ? old.currentUserId : null }
+    })
+  }, [])
+  return <StoreCtx.Provider value={{ state, update, updateCalendar, sendTg, reset, setDataset, toast, dismissToast, toasts }}>{children}</StoreCtx.Provider>
 }
 
 export const useStore = () => useContext(StoreCtx)
 
+const byIdCache = new WeakMap<Person[], Map<string, Person>>()
+/** Сотрудники по id. Один Map на версию списка — для 1500 человек find() в цикле слишком дорог. */
+export function peopleById(people: Person[]) {
+  let m = byIdCache.get(people)
+  if (!m) { m = new Map(people.map((p) => [p.id, p])); byIdCache.set(people, m) }
+  return m
+}
+
 export function usePerson(id?: string | null) {
   const { state } = useStore()
-  return state.people.find((p) => p.id === id)
+  return id ? peopleById(state.people).get(id) : undefined
 }
 
 export function useHashRoute(): [string[], (to: string) => void] {

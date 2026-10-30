@@ -61,6 +61,8 @@ export interface Calendar {
   description: string
   type: CalendarType
   team: string
+  /** Подразделение, которому принадлежит календарь. Если не задано — подразделение лида. */
+  orgUnit?: string
   ownerId: string
   leadId: string
   /** IANA-зона календаря: в ней считаются передачи смен, часы слоёв и дни недели. */
@@ -93,8 +95,12 @@ export interface TgMessage {
   incidentId?: string
 }
 
+export type Dataset = 'small' | 'large'
+
 export interface State {
   version: number
+  /** Демо-набор: 5 команд или ~300 команд. По умолчанию small. */
+  dataset?: Dataset
   currentUserId: string | null
   people: Person[]
   calendars: Calendar[]

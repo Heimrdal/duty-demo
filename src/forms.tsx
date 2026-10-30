@@ -1,9 +1,10 @@
 import { useId, useMemo, useState } from 'react'
 import { addDays, calendarOnCall, describePattern, fmtDT, fmtDur, HOUR, hm, isoDate, layerBoundary, layerOnCall, rotationLabel, startOfDay, uid, weekday } from './engine'
 import { makeShift, teamFirstIds, upsertShift } from './perm'
-import { useStore } from './store'
 import { atDay, dayNumber, DEFAULT_TZ, fromInputTz, toInputTz, tzLabel } from './tz'
-import { Avatar, Btn, Field, inputCls, KIND_META, KindMark, LeadSelect, Modal } from './ui'
+import { PersonPicker } from './PersonPicker'
+import { peopleById, useStore } from './store'
+import { Avatar, Btn, Field, inputCls, KIND_META, KindMark, Modal } from './ui'
 import type { Calendar, Layer, LayerKind, Restriction, Shift } from './types'
 
 const mondayOf = (t: number, tz: string) => { const x = startOfDay(t, tz); return addDays(x, -weekday(x, tz), tz) }
@@ -107,7 +108,7 @@ export function TakeDutyModal({ calendarId, onClose }: { calendarId?: string; on
         <p className="text-sm text-muted"><span className="text-ink">{me.name}</span> записывается на себя. Календарь и время — остальное подставим.</p>
         <Field label="Календарь">
           <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
-            {ordered.map((x) => (
+            {ordered.slice(0, 6).map((x) => (
               <button key={x.id} type="button" aria-pressed={x.id === calId} onClick={() => setCalId(x.id)} className={`rounded-lg border px-3 py-2 text-left text-sm ${x.id === calId ? 'border-accent bg-accent-soft' : 'border-line hover:bg-surface-2'}`}>
                 <div className="font-medium">{x.name}</div>
               </button>
@@ -143,10 +144,8 @@ export function TakeDutyModal({ calendarId, onClose }: { calendarId?: string; on
         </Field>
         {mode === 'replace' && (
           <Field label="Кого подменяю">
-            <select className={inputCls} value={replaces} onChange={(e) => setReplaces(e.target.value)}>
-              <option value="">Выберите</option>
-              {candidates.map((e) => <option key={e.personId} value={e.personId}>{state.people.find((p) => p.id === e.personId)?.name} · {e.layerName}</option>)}
-            </select>
+            <PersonPicker testId="take-replaces" people={candidates.map((e) => peopleById(state.people).get(e.personId)).filter((p) => !!p)} value={replaces} onChange={setReplaces}
+              note={(p) => candidates.find((e) => e.personId === p.id)?.layerName} placeholder="Кто сейчас дежурит" />
           </Field>
         )}
         <Field label="Комментарий"><input className={inputCls} value={note} onChange={(e) => setNote(e.target.value)} placeholder="например: релиз 2.14, ночное окно" /></Field>
@@ -171,7 +170,8 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
   })
   const set = (patch: Partial<Layer>) => setL((x) => ({ ...x, ...patch }))
   const steps = ['Название и тип', 'Ротация', 'Участники', 'Часы дежурства', 'Проверка']
-  const teams = [...new Set(state.people.map((p) => p.orgUnit))]
+  const teamIds = useMemo(() => teamFirstIds(c, state.people), [c, state.people])
+  const byId = peopleById(state.people)
   const toggle = (id: string) => set({ participants: l.participants.includes(id) ? l.participants.filter((x) => x !== id) : [...l.participants, id] })
   const move = (i: number, d: number) => { const a = [...l.participants]; const j = i + d; if (j < 0 || j >= a.length) return; [a[i], a[j]] = [a[j], a[i]]; set({ participants: a }) }
   const okStep = [l.name.trim().length > 0, l.rotation.count > 0, l.participants.length > 0, true, true][step]
@@ -277,30 +277,31 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
           <div>
             <div className="mb-2 text-sm font-medium">Участники</div>
             {tpl === 'sutki' && <p className="mb-2 text-xs text-muted">Для «сутки через трое» на одно место обычно четверо. Шаблон выбран.</p>}
-            <div className="max-h-80 space-y-3 overflow-y-auto pr-1 scroll-thin">
-              {teams.map((t) => (
-                <div key={t}>
-                  <div className="mb-1 text-xs text-faint">{t}</div>
-                  {state.people.filter((p) => p.orgUnit === t).map((p) => (
-                    <label key={p.id} className="flex cursor-pointer items-center gap-2 rounded-md px-1 py-1 text-sm hover:bg-surface-2">
-                      <input type="checkbox" checked={l.participants.includes(p.id)} onChange={() => toggle(p.id)} />
-                      <Avatar p={p} size={22} /> {p.name}
-                    </label>
-                  ))}
-                </div>
-              ))}
-            </div>
+            <PersonPicker testId="wizard-add" addMode people={state.people} exclude={l.participants} teamFirst={teamIds} teamLabel={`Команда «${c.team}»`} value="" onChange={(id) => id && toggle(id)} aria-label="Добавить участника" />
+            {teamIds.length > 0 && (
+              <div className="mt-3 max-h-72 overflow-y-auto pr-1 scroll-thin">
+                <div className="mb-1 text-xs text-faint">Команда «{c.team}»</div>
+                {teamIds.slice(0, 30).map((id) => byId.get(id)).filter((p) => !!p).map((p) => (
+                  <label key={p.id} className="flex cursor-pointer items-center gap-2 rounded-md px-1 py-1 text-sm hover:bg-surface-2">
+                    <input type="checkbox" checked={l.participants.includes(p.id)} onChange={() => toggle(p.id)} />
+                    <Avatar p={p} size={22} /> {p.name}
+                  </label>
+                ))}
+              </div>
+            )}
+            <p className="mt-2 text-xs text-muted">Коллег из других команд найдите через поиск: имя, telegram или подразделение.</p>
           </div>
           <div>
             <div className="mb-2 text-sm font-medium">Порядок очереди</div>
             <ol className="space-y-1">
               {l.participants.map((id, i) => {
-                const p = state.people.find((x) => x.id === id)!
+                const p = byId.get(id)
                 return (
                   <li key={id} className="flex items-center gap-2 rounded-lg px-1 py-1 text-sm">
-                    <span className="w-4 text-faint">{i + 1}</span><Avatar p={p} size={22} /><span className="flex-1">{p.name}</span>
-                    <button onClick={() => move(i, -1)} className="px-1 text-faint hover:text-ink" aria-label="Выше">↑</button>
-                    <button onClick={() => move(i, 1)} className="px-1 text-faint hover:text-ink" aria-label="Ниже">↓</button>
+                    <span className="w-4 text-faint">{i + 1}</span><Avatar p={p} size={22} /><span className="flex-1">{p?.name ?? id}</span>
+                    <button onClick={() => move(i, -1)} className="px-1 text-faint hover:text-ink" aria-label={`Выше: ${p?.name ?? ''}`}>↑</button>
+                    <button onClick={() => move(i, 1)} className="px-1 text-faint hover:text-ink" aria-label={`Ниже: ${p?.name ?? ''}`}>↓</button>
+                    <button onClick={() => toggle(id)} className="px-1 text-faint hover:text-danger" aria-label={`Убрать: ${p?.name ?? ''}`}>×</button>
                   </li>
                 )
               })}
@@ -363,7 +364,7 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
             {preview.map((r, i) => (
               <div key={i} className="flex flex-wrap items-center gap-3 rounded-lg px-1 py-1.5">
                 <span className="w-72 text-muted">{fmtDT(r.start, tz)} — {fmtDT(r.end, tz)}</span>
-                <span className="flex flex-wrap gap-3">{r.ids.map((id) => { const p = state.people.find((x) => x.id === id)!; return <span key={id} className="flex items-center gap-1.5"><Avatar p={p} size={20} />{p.name}</span> })}</span>
+                <span className="flex flex-wrap gap-3">{r.ids.map((id) => { const p = byId.get(id)!; return <span key={id} className="flex items-center gap-1.5"><Avatar p={p} size={20} />{p.name}</span> })}</span>
               </div>
             ))}
           </div>
@@ -422,7 +423,8 @@ export function AssignDutyModal({ c, init, onClose }: { c: Calendar; init?: Assi
   const inPast = !empty && (editing ? eT <= Date.now() : sT < Date.now() - 5 * 60_000)
   const onCall = !empty ? calendarOnCall({ ...c, shifts: c.shifts.filter((x) => x.id !== editing?.id) }, Math.max(sT, Date.now()) + 1) : []
   const replaceOptions = [...new Set([...onCall.map((e) => e.personId), ...(initReplaces ? [initReplaces] : [])])].filter((id) => id !== personId)
-  const name = (id?: string) => state.people.find((p) => p.id === id)?.name ?? ''
+  const name = (id?: string) => (id ? peopleById(state.people).get(id)?.name : '') ?? ''
+  const teamFirst = useMemo(() => teamFirstIds(c, state.people), [c, state.people])
   // выбранный «кого заменить» мог выпасть из списка (например, выбрали его же дежурным) — тогда не отправляем
   const target = replaceOptions.includes(replaces) ? replaces : ''
   const error = !personId ? 'Выберите, кто дежурит' : empty ? 'Укажите начало и окончание' : eT <= sT ? 'Окончание раньше начала' : inPast ? 'Интервал уже прошёл — выберите будущее время'
@@ -458,7 +460,7 @@ export function AssignDutyModal({ c, init, onClose }: { c: Calendar; init?: Assi
       <div className="space-y-6">
         <p className="text-sm text-muted">Календарь «<span className="text-ink">{c.name}</span>». Человек получит уведомление в Telegram.</p>
         <Field label="Кто дежурит">
-          <LeadSelect testId="assign-person" people={state.people} teamFirst={teamFirstIds(c, state.people)} value={personId} onChange={setPersonId} />
+          <PersonPicker testId="assign-person" people={state.people} teamFirst={teamFirst} teamLabel="Команда календаря" value={personId} onChange={setPersonId} />
         </Field>
         <Field label="Как">
           <div className="grid grid-cols-2 gap-2 text-sm">
@@ -472,10 +474,8 @@ export function AssignDutyModal({ c, init, onClose }: { c: Calendar; init?: Assi
         </Field>
         {mode === 'replace' && (
           <Field label="Кого заменить">
-            <select data-testid="assign-replaces" className={inputCls} value={target} onChange={(e) => setReplaces(e.target.value)}>
-              <option value="">Выберите</option>
-              {replaceOptions.map((id) => <option key={id} value={id}>{name(id)}</option>)}
-            </select>
+            <PersonPicker testId="assign-replaces" people={replaceOptions.map((id) => peopleById(state.people).get(id)).filter((p) => !!p)} value={target} onChange={setReplaces}
+              note={(p) => onCall.find((e) => e.personId === p.id)?.layerName} placeholder="Кто дежурит в это время" />
           </Field>
         )}
         <Field label="Когда">

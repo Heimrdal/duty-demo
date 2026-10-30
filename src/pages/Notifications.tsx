@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react'
 import { calendarOnCall, DAY, fmtDT, HOUR, sampleSegments } from '../engine'
 import { tzLabel } from '../tz'
-import { useNow, useStore } from '../store'
+import { involves } from '../cache'
+import { PersonPicker } from '../PersonPicker'
+import { peopleById, useNow, useStore } from '../store'
 import { Btn, Field, inputCls } from '../ui'
 import type { NotifySettings, TgKind } from '../types'
 
@@ -17,9 +19,10 @@ export function Notifications({ incident }: { incident?: string }) {
   const setNs = (patch: Partial<NotifySettings>) => update((s) => ({ ...s, notify: { ...s.notify, [me.id]: { ...s.notify[me.id], ...patch } } }))
   const pool = inc ? state.messages.filter((m) => m.incidentId === inc) : state.messages
   const msgs = pool.filter((m) => who === 'all' || m.toPersonId === who).slice().sort((a, b) => +new Date(a.ts) - +new Date(b.ts))
-  const byId = (id: string) => state.people.find((p) => p.id === id)
+  const byId = (id: string) => peopleById(state.people).get(id)
+  const logPeople = useMemo(() => [...new Set([me.id, ...state.messages.map((m) => m.toPersonId)])], [me.id, state.messages])
 
-  const planned = useMemo(() => state.calendars.flatMap((c) =>
+  const planned = useMemo(() => state.calendars.filter((c) => involves(c, me.id)).flatMap((c) =>
     sampleSegments(Math.floor(now / HOUR) * HOUR, now + 3 * DAY, (t) => (calendarOnCall(c, t).some((e) => e.personId === me.id) ? me.id : null), HOUR)
       .filter((s) => s.start > now).map((s) => ({ c, s }))), [state.calendars, me.id, Math.floor(now / 600000)]) // eslint-disable-line
 
@@ -63,10 +66,8 @@ export function Notifications({ incident }: { incident?: string }) {
                 <button type="button" aria-label={`Сбросить фильтр по инциденту ${inc}`} title="Сбросить фильтр" className="text-muted hover:text-ink" onClick={() => { setInc(undefined); if (location.hash !== '#/notifications') history.replaceState(null, '', '#/notifications') }}>×</button>
               </span>
             )}
-            <select aria-label="Чьи сообщения показать" className={`${inputCls} w-56`} value={who} onChange={(e) => setWho(e.target.value)}>
-              <option value="all">Все</option>
-              {state.people.map((p) => <option key={p.id} value={p.id}>{p.name}{p.id === me.id ? ' (вы)' : ''}</option>)}
-            </select>
+            <PersonPicker className="w-60" aria-label="Чьи сообщения показать" testId="log-who" people={state.people} teamFirst={logPeople} teamLabel="Есть сообщения" emptyLabel="Все"
+              note={(p) => (p.id === me.id ? 'вы' : undefined)} value={who === 'all' ? '' : who} onChange={(id) => setWho(id || 'all')} />
           </div>
           <div className="h-[520px] space-y-3 overflow-y-auto bg-surface-2 p-4 scroll-thin">
             {msgs.length === 0 && (
