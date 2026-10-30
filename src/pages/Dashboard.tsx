@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { hasWeekGap, involves, onCallAt, onCallIndex } from '../cache'
 import { CalendarFilters, CalendarRow, OnCallCard, Pager } from '../CalendarList'
-import { calendarOnCall, DAY, fmtDT, fmtDur, HOUR, sampleSegments } from '../engine'
+import { calendarLaunch, calendarOnCall, DAY, fmtDT, fmtDur, HOUR, sampleSegments } from '../engine'
 import { useFavorites } from '../favorites'
 import { calendarOrgUnit, EMPTY_FILTER, filterCalendars, type CalFilter } from '../search'
 import { peopleById, useNow, useStore } from '../store'
@@ -72,7 +72,7 @@ export function Dashboard() {
     : weekGaps?.length ? { label: weekGaps.length <= 3 && few ? null : 'Показать', on: () => showGaps('week') } : null
 
   // маленький набор: все карточки, как раньше
-  const smallRows = few ? state.calendars.filter((c) => (f.coverage === 'all' || (f.coverage === 'now' ? onCallAt(c, now).length === 0 : hasWeekGap(c, now)))) : []
+  const smallRows = few ? state.calendars.filter((c) => (f.coverage === 'all' || (f.coverage === 'now' ? onCallAt(c, now).length === 0 && now >= calendarLaunch(c) : hasWeekGap(c, now)))) : []
 
   return (
     <div className="space-y-10">

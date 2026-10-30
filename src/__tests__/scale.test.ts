@@ -49,8 +49,14 @@ describe('большой демо-набор', () => {
   test('в большом наборе есть и дыры, и покрытые календари', () => {
     const s = initialState(NOW, 'large')
     const idx = onCallIndex(s.calendars, NOW)
-    expect(idx.gapsNow.length).toBeGreaterThan(0)
-    expect(idx.gapsNow.length).toBeLessThan(s.calendars.length / 3)
+    // календари без графика — «ещё не запущены», а не дыры
+    expect(idx.pendingNow.length).toBeGreaterThan(0)
+    expect(idx.pendingNow.every((c) => !c.layers.length)).toBe(true)
+    // ночью у команд «только рабочие часы» — настоящие дыры
+    const night = NOW - (NOW % (24 * 3600_000)) + 22 * 3600_000
+    const n = onCallIndex(s.calendars, night)
+    expect(n.gapsNow.length).toBeGreaterThan(0)
+    expect(n.gapsNow.length).toBeLessThan(s.calendars.length / 3)
   })
 })
 

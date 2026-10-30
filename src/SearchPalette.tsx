@@ -1,6 +1,6 @@
 import { useMemo, useState, type KeyboardEvent } from 'react'
 import { onCallIndex } from './cache'
-import type { OnCallEntry } from './engine'
+import { calendarLaunch, type OnCallEntry } from './engine'
 import { loadFavorites } from './favorites'
 import { buildIndex, groupHits, KIND_LABEL, search, type Hit, type SearchItem } from './search'
 import { peopleById, useNow, useStore } from './store'
@@ -109,6 +109,7 @@ export function SearchPalette({ onClose }: { onClose: () => void }) {
                             ? (r.dutyIn!.length ? <span className="text-ok">Дежурит сейчас: {r.dutyIn!.slice(0, 3).map((c) => c.name).join(', ')}{r.dutyIn!.length > 3 ? ` и ещё ${r.dutyIn!.length - 3}` : ''}</span> : <span className="text-faint">сейчас не на смене</span>)
                             : it.calendarIds.length === 0 ? <span className="text-faint">без календаря</span>
                             : r.onDuty.length ? <span className="text-ink">Дежурит: {r.onDuty[0].p.name}{r.onDuty.length > 1 ? <span className="text-muted"> +{r.onDuty.length - 1}</span> : ''} <span className="text-muted">· {r.onDuty[0].p.phone}</span></span>
+                            : it.calendarIds.every((id) => { const c = state.calendars.find((x) => x.id === id); return !c || Date.now() < calendarLaunch(c) }) ? <span className="text-faint">ещё не запущено</span>
                             : <span className="text-danger">никто не дежурит</span>}
                         </span>
                       </span>

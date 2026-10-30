@@ -26,6 +26,22 @@ export function canEditSchedule(c: Calendar, people: Person[], userId: string | 
   return scheduleEditors(c, people).includes(userId)
 }
 
+/** Руководящие должности: по ним без календаря понятно, кто ведёт команду. */
+const LEAD_TITLE = /лид|руковод|начальник|директор|head|lead/i
+
+/**
+ * Кто может настраивать дежурства команды: те, кто ведёт расписание её календарей,
+ * руководящие должности внутри команды и руководители участников по оргструктуре.
+ */
+export function teamEditors(team: string, calendars: Calendar[], people: Person[]): string[] {
+  const members = people.filter((p) => p.teams.includes(team))
+  return [...new Set([
+    ...calendars.filter((c) => c.team === team).flatMap((c) => scheduleEditors(c, people)),
+    ...members.filter((p) => LEAD_TITLE.test(p.title)).flatMap((p) => [p.id, ...managerChain(people, p.id)]),
+    ...members.flatMap((p) => managerChain(people, p.id)),
+  ])]
+}
+
 /** Свою смену человек отменяет сам, чужую — только тот, кто ведёт расписание. */
 export function canCancelShift(c: Calendar, people: Person[], userId: string | null | undefined, s: Shift): boolean {
   if (!userId) return false

@@ -1,7 +1,7 @@
 /** Общие блоки для списков календарей: карточка «кто дежурит», компактные строки, фильтры, звёздочка. */
 import { useState } from 'react'
 import { onCallAt } from './cache'
-import { fmtDT, nextHandoff } from './engine'
+import { fmtDT, launchNote, nextHandoff } from './engine'
 import type { CalFilter, Coverage } from './search'
 import { peopleById, useStore } from './store'
 import { tzLabel } from './tz'
@@ -39,7 +39,7 @@ export function OnCallCard({ c, now, fav, onFav }: { c: Calendar; now: number; f
         <StarButton on={fav} name={c.name} onToggle={onFav} className="-mt-1 -mr-2" />
       </div>
       <div className="flex-1 space-y-3 px-5 py-4">
-        {entries.length === 0 && <p className="text-sm text-danger">Сейчас никто не дежурит. Алерт уйдёт лиду.</p>}
+        {entries.length === 0 && (launchNote(c, now) ? <p className="text-sm text-muted" data-testid="pending-note">{cap(launchNote(c, now)!)}</p> : <p className="text-sm text-danger">Сейчас никто не дежурит. Алерт уйдёт лиду.</p>)}
         {entries.map((e) => {
           const p = byId.get(e.personId)
           if (!p) return null
@@ -81,7 +81,7 @@ export function CalendarRow({ c, now, org, fav, onFav }: { c: Calendar; now: num
             <Avatar p={first} size={24} />
             <span className="min-w-0 truncate text-sm">{first.name}{entries.length > 1 && <span className="text-muted"> +{entries.length - 1}</span>}<span className="text-muted"> · {entries[0].layerName}</span></span>
           </>
-        ) : <span className="text-sm text-danger">никто не дежурит</span>}
+        ) : launchNote(c, now) ? <span className="text-sm text-muted">{launchNote(c, now)}</span> : <span className="text-sm text-danger">никто не дежурит</span>}
       </div>
       {first && <span className="hidden text-xs text-muted md:inline">{first.phone}</span>}
       {first ? <ContactActions p={first} /> : <span className="w-12" />}
@@ -128,3 +128,4 @@ export function Pager({ page, total, size, set }: { page: number; total: number;
     </nav>
   )
 }
+const cap = (s: string) => s[0].toUpperCase() + s.slice(1)

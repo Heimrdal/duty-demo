@@ -1,5 +1,6 @@
 /** Поиск по командам, календарям, людям и системам + фильтры списков. Чистые функции: легко тестировать. */
 import { hasWeekGap, onCallAt } from './cache'
+import { calendarLaunch } from './engine'
 import type { Calendar, Person } from './types'
 
 /** Нижний регистр, ё → е, всё кроме букв и цифр — пробел. */
@@ -142,7 +143,7 @@ export function filterCalendars(cals: Calendar[], f: CalFilter, now: number, org
       const hay = ' ' + norm([c.name, c.product, c.team, orgOf(c)].join(' '))
       if (!toks.every((t) => hay.includes(t))) return false
     }
-    if (f.coverage === 'now' && onCallAt(c, now).length > 0) return false
+    if (f.coverage === 'now' && (onCallAt(c, now).length > 0 || now < calendarLaunch(c))) return false
     if (f.coverage === 'week' && !hasWeekGap(c, now)) return false
     return true
   })

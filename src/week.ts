@@ -1,4 +1,4 @@
-import { calendarOnCall, HOUR, isManual, manualGaps, rotationIndex, samplePoints } from './engine'
+import { calendarLaunch, calendarOnCall, DAY, HOUR, isManual, manualGaps, periodDays, rotationIndex, samplePoints } from './engine'
 import { layerLanes, type Lane, type LaneSeg } from './lanes'
 import { addDaysTz, atDay, dayNumber, fmtTz, isoOfDayNumber, startOfDayTz, startOfMonthTz, weekdayTz, zparts } from './tz'
 import type { Calendar, Layer } from './types'
@@ -54,6 +54,10 @@ export interface WeekCard {
   shiftId?: string
   slotId?: string
   note?: string
+  /** вся смена целиком, даже если она выходит за границы недели: подпись и длительность считаются по ней */
+  full?: { start: number; end: number; hours: number }
+  /** смена начинается до этой недели или заканчивается после неё */
+  cut?: boolean
 }
 export interface WeekGroup { key: string; layer?: Layer; label: string; kind: string; rows: WeekCard[][]; gaps: { start: number; end: number }[] }
 
@@ -83,31 +87,63 @@ export function cardsOfLane(c: Calendar, ln: Lane, layer: Layer | undefined): We
   return out
 }
 
+/** Сколько захватить по краям недели, чтобы увидеть смену целиком: самая длинная смена календаря, не больше 5 недель. */
+function edgePad(c: Calendar): number {
+  let pad = DAY
+  for (const l of c.layers) {
+    if (isManual(l)) for (const x of l.slots ?? []) pad = Math.max(pad, +new Date(x.end) - +new Date(x.start))
+    else pad = Math.max(pad, periodDays(l) * DAY)
+  }
+  for (const s of c.shifts) pad = Math.max(pad, +new Date(s.end) - +new Date(s.start))
+  return Math.min(pad, 35 * DAY)
+}
+
+/** Обрезаем карточку по неделе, а полные границы смены сохраняем для подписи. */
+function clipCards(cards: WeekCard[], ws: number, we: number): WeekCard[] {
+  const out: WeekCard[] = []
+  for (const x of cards) {
+    const active = x.active.map((a) => ({ start: Math.max(ws, a.start), end: Math.min(we, a.end) })).filter((a) => a.end > a.start)
+    if (!active.length) continue
+    const hours = x.active.reduce((sum, a) => sum + a.end - a.start, 0) / HOUR
+    out.push({ ...x, start: active[0].start, end: active[active.length - 1].end, active, full: { start: x.start, end: x.end, hours }, cut: x.start < ws || x.end >= we })
+  }
+  return out
+}
+
+/** Участок недели до первого старта календаря: «ещё не запущено», не дыра. */
+export function prelaunchRange(c: Calendar, ws: number, we: number): { start: number; end: number } | null {
+  const launch = calendarLaunch(c)
+  return launch > ws ? { start: ws, end: Math.min(we, launch) } : null
+}
+
 /** Все группы (слои + разовые) недели [ws, ws+7д) и дыры покрытия календаря. */
-export function weekBoard(c: Calendar, ws: number, step = HOUR): { groups: WeekGroup[]; gaps: { start: number; end: number }[] } {
+export function weekBoard(c: Calendar, ws: number, step = HOUR): { groups: WeekGroup[]; gaps: { start: number; end: number }[]; prelaunch: { start: number; end: number } | null } {
   const tz = c.timezone
   const we = addDaysTz(ws, 7, tz)
+  const pad = edgePad(c)
   const breaks = c.shifts.flatMap((s) => [+new Date(s.start), +new Date(s.end)])
   for (const l of c.layers) if (isManual(l)) for (const x of l.slots ?? []) breaks.push(+new Date(x.start), +new Date(x.end))
-  const lanes = layerLanes(c, ws, we, step, breaks)
+  // смены считаем на расширенном окне: карточка, которая переходит через границу недели, получает настоящие начало и конец
+  const lanes = layerLanes(c, ws - pad, we + pad, step, breaks)
   const groups: WeekGroup[] = []
+  const launch = calendarLaunch(c)
   for (const l of c.layers) {
     const mine = lanes.filter((x) => x.layerId === l.id)
-    groups.push({ key: l.id, layer: l, label: l.name, kind: l.kind, rows: mine.map((ln) => cardsOfLane(c, ln, l)), gaps: isManual(l) ? manualGaps(l, ws, we) : [] })
+    groups.push({ key: l.id, layer: l, label: l.name, kind: l.kind, rows: mine.map((ln) => clipCards(cardsOfLane(c, ln, l), ws, we)), gaps: isManual(l) ? manualGaps(l, Math.max(ws, Math.min(we, launch)), we) : [] })
   }
   const own = lanes.find((x) => x.key === 'shifts')
-  if (own) groups.push({ key: 'shifts', label: 'Разовые дежурства', kind: 'oneoff', rows: packCards(cardsOfLane(c, own, undefined)), gaps: [] })
-  // дыры покрытия: никто не дежурит во всём календаре
+  if (own) groups.push({ key: 'shifts', label: 'Разовые дежурства', kind: 'oneoff', rows: packCards(clipCards(cardsOfLane(c, own, undefined), ws, we)), gaps: [] })
+  // дыры покрытия: календарь уже запущен, а во всём календаре никто не дежурит
   const gaps: { start: number; end: number }[] = []
   const pts = samplePoints(ws, we, step, breaks)
   pts.forEach((t, i) => {
     const end = i + 1 < pts.length ? pts[i + 1] : Math.min(we, t + step)
-    if (calendarOnCall(c, t + 1).length) return
+    if (t + 1 < launch || calendarOnCall(c, t + 1).length) return
     const g = gaps[gaps.length - 1]
     if (g && g.end === t) g.end = end
-    else gaps.push({ start: t, end })
+    else gaps.push({ start: Math.max(t, ws), end })
   })
-  return { groups, gaps }
+  return { groups, gaps, prelaunch: prelaunchRange(c, ws, we) }
 }
 
 function packCards(cards: WeekCard[]): WeekCard[][] {
@@ -121,14 +157,21 @@ function packCards(cards: WeekCard[]): WeekCard[][] {
 }
 
 const HM = (t: number, tz: string) => fmtTz(t, tz, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
-/** Подпись карточки: «08:00 – 20:00 (12ч)»; если смена на несколько дней — с днями недели. */
-export function cardTime(card: Pick<WeekCard, 'start' | 'end' | 'active'>, tz: string, compact = false) {
-  const h = card.active.reduce((s, x) => s + x.end - x.start, 0) / HOUR
-  const hours = `${Math.round(h * 10) / 10}ч`
-  const sameDay = dayNumber(card.start, tz) === dayNumber(card.end - 1, tz)
+const dm = (t: number, tz: string) => `${fmtTz(t, tz, { day: 'numeric' })} ${fmtTz(t, tz, { month: 'short' }).replace('.', '')}`
+/**
+ * Подпись карточки по всей смене, а не по её куску в неделе:
+ * «08:00 – 20:00 (12ч)», «пн 10:00 – чт 10:00 (72ч)»,
+ * а если смена выходит за неделю — с датами: «30 окт 10:00 – 6 нояб 10:00 (168ч)».
+ */
+export function cardTime(card: Pick<WeekCard, 'start' | 'end' | 'active' | 'full' | 'cut'>, tz: string, compact = false) {
+  const f = card.full ?? { start: card.start, end: card.end, hours: card.active.reduce((s, x) => s + x.end - x.start, 0) / HOUR }
+  const hours = `${Math.round(f.hours * 10) / 10}ч`
+  const short = f.end - f.start <= 24 * HOUR
   const wd = (t: number) => fmtTz(t, tz, { weekday: 'short' }).replace('.', '')
-  if (compact) return `${HM(card.start, tz)}–${HM(card.end, tz)}`
-  return sameDay || card.end - card.start <= 24 * HOUR ? `${HM(card.start, tz)} – ${HM(card.end, tz)} (${hours})` : `${wd(card.start)} ${HM(card.start, tz)} – ${wd(card.end - 1)} ${HM(card.end, tz)} (${hours})`
+  if (compact) return short ? `${HM(f.start, tz)}–${HM(f.end, tz)}` : card.cut ? `${dm(f.start, tz)} – ${dm(f.end, tz)}` : `${wd(f.start)}–${wd(f.end)}`
+  if (short) return `${HM(f.start, tz)} – ${HM(f.end, tz)} (${hours})`
+  if (card.cut) return `${dm(f.start, tz)} ${HM(f.start, tz)} – ${dm(f.end, tz)} ${HM(f.end, tz)} (${hours})`
+  return `${wd(f.start)} ${HM(f.start, tz)} – ${wd(f.end)} ${HM(f.end, tz)} (${hours})`
 }
 
 /** Момент по позиции курсора в строке недели, с привязкой к часу. */

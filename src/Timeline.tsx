@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { addDays, calendarOnCall, fmtDT, fmtDur, HOUR, samplePoints, startOfDay, weekday, type Segment } from './engine'
+import { addDays, calendarLaunch, calendarOnCall, fmtDT, fmtDur, HOUR, samplePoints, startOfDay, weekday, type Segment } from './engine'
 import { layerLanes, type Lane } from './lanes'
 import { useStore } from './store'
 import { fmtTz, tzName, zparts } from './tz'
@@ -54,7 +54,8 @@ export function Timeline({ c, from, days, now, actions, onFill }: { c: Calendar;
     let cur: { start: number; end: number } | null = null
     for (let k = 0; k < pts.length; k++) {
       const t = pts[k]
-      const empty = calendarOnCall(c, t + 1).length === 0
+      // до первого старта календаря — «ещё не запущено», это не дыра
+      const empty = t + 1 >= calendarLaunch(c) && calendarOnCall(c, t + 1).length === 0
       if (empty) {
         if (cur) cur.end = nextPt(k)
         else cur = { start: t, end: nextPt(k) }
@@ -119,7 +120,7 @@ export function Timeline({ c, from, days, now, actions, onFill }: { c: Calendar;
                 const lines = [
                   `${c.name} · ${s.removed ? `${layerName} · снят(а) с дежурства` : s.hatch && ln.key !== 'shifts' ? `${layerName}, подмена` : layerName}`,
                   ...(replacedName ? [`Подмена: вместо ${replacedName}`] : []),
-                  `${fmtDT(s.start, tz)} — ${fmtDT(s.end, tz)} · ${fmtDur(s.end - s.start)}`,
+                  `${fmtDT(s.start, tz)} — ${fmtDT(s.end, tz)} · ${fmtDur(s.end - s.start)}${s.start <= a || s.end >= b ? ' (видимая часть)' : ''}`,
                   `Часовой пояс: ${tzName(tz)}`,
                   ...(s.extra ? [s.extra] : []),
                   ...(removal?.note ? [`Причина: ${removal.note}`] : []),
@@ -152,6 +153,12 @@ export function Timeline({ c, from, days, now, actions, onFill }: { c: Calendar;
         <div className="flex border-b border-line">
           <div className="w-52 shrink-0 px-3 py-1.5 text-xs text-muted">Покрытие</div>
           <div className="relative h-8 flex-1">
+            {calendarLaunch(c) > a && (() => {
+              const launch = calendarLaunch(c)
+              const width = ((Math.min(b, launch) - a) / span) * 100
+              const label = Number.isFinite(launch) ? `Ещё не запущено · старт ${fmtDT(launch, tz)}` : 'Ещё не запущено · графика нет'
+              return <div data-testid="prelaunch" title={label} className="absolute top-1 bottom-1 flex items-center overflow-hidden rounded-md bg-surface-2 px-1 text-[11px] whitespace-nowrap text-muted" style={{ left: 0, width: `${width}%` }}>{width > 8 ? (width > 25 ? label : 'Ещё не запущено') : ''}</div>
+            })()}
             {gaps.map((g) => {
               const left = ((g.start - a) / span) * 100
               const width = ((g.end - g.start) / span) * 100

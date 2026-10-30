@@ -67,7 +67,7 @@ export default function App() {
 
   let page
   switch (route[0]) {
-    case 'calendars': page = route[1] === 'q' ? <Calendars key={route[2] ?? ''} initialQuery={safeDecode(route[2] ?? '')} /> : route[1] ? <CalendarView key={route[1]} id={route[1]} /> : <Calendars />; break
+    case 'calendars': page = route[1] === 'q' ? <Calendars key={route[2] ?? ''} initialQuery={safeDecode(route[2] ?? '')} /> : route[1] ? <CalendarView key={route[1] + (route[2] ? "/" + route[2] : "")} id={route[1]} initialTab={route[2]} /> : <Calendars />; break
     case 'teams': page = <TeamView key={route[1] ?? ''} name={safeDecode(route[1] ?? '')} />; break
     case 'escalation': page = <Escalation />; break
     case 'notifications': page = <Notifications key={route[1] ?? ''} incident={route[1] ? safeDecode(route[1]) : undefined} />; break

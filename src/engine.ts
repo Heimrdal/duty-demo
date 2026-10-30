@@ -351,20 +351,22 @@ export function personDutySpans(calendars: Calendar[], personId: string, from: n
   return out
 }
 
-export interface CoverSeg { start: number; end: number; gap: boolean; gapNames: string }
+export interface CoverSeg { start: number; end: number; gap: boolean; gapNames: string; /** календари, которые ещё не запущены */ pendingNames?: string }
 
 /** Дыры: интервалы, где хотя бы в одном календаре команды никто не дежурит. */
 export function teamCoverage(calendars: Calendar[], from: number, to: number, step = HOUR): CoverSeg[] {
   const out: CoverSeg[] = []
   let cur: CoverSeg | null = null
   for (let t = from; t < to; t += step) {
-    const names = calendars.filter((c) => calendarOnCall(c, t + 1).length === 0).map((c) => c.name)
+    // до первого старта календарь «ещё не запущен» — это не дыра
+    const names = calendars.filter((c) => isGapAt(c, t + 1)).map((c) => c.name)
+    const pendingNames = calendars.filter((c) => t + 1 < calendarLaunch(c)).map((c) => c.name).join(', ')
     const gap = names.length > 0
     const gapNames = names.join(', ')
-    if (cur && cur.gap === gap && cur.gapNames === gapNames) cur.end = t + step
+    if (cur && cur.gap === gap && cur.gapNames === gapNames && cur.pendingNames === pendingNames) cur.end = t + step
     else {
       if (cur) out.push(cur)
-      cur = { start: t, end: t + step, gap, gapNames }
+      cur = { start: t, end: t + step, gap, gapNames, pendingNames }
     }
   }
   if (cur) out.push(cur)
@@ -489,7 +491,7 @@ function newGap(before: Calendar, after: Calendar, a: number, b: number): { star
   let ge = -1
   for (let t = a; t < b; t += HOUR / 4) {
     const probe = t === a ? t + 1 : t
-    if (calendarOnCall(after, probe).length === 0 && calendarOnCall(before, probe).length > 0) {
+    if (probe >= calendarLaunch(after) && calendarOnCall(after, probe).length === 0 && calendarOnCall(before, probe).length > 0) {
       if (gs < 0) gs = t
       ge = Math.min(b, t + HOUR / 4)
     }
@@ -521,4 +523,118 @@ export function makeRemoval(x: RemovalInput, now: number = Date.now()): Shift {
     start: new Date(x.start).toISOString(), end: new Date(x.end).toISOString(),
     note: x.note?.trim() || undefined, createdAt: new Date(now).toISOString(),
   }
+}
+
+/* ---------------- Запуск календаря ---------------- */
+
+/** Когда слой начинает дежурить: начало ротации или самая ранняя ручная смена. Без участников — никогда. */
+export function layerLaunch(l: Layer, tz: string): number {
+  const anchor = layerAnchor(l, tz)
+  if (isManual(l)) {
+    const s = manualSlots(l)
+    return s.length ? Math.min(s[0].start, anchor) : anchor
+  }
+  return l.participants.length ? anchor : Infinity
+}
+
+const launchCache = new WeakMap<object, number>()
+/** Первый старт календаря. До него время — «ещё не запущено», а не дыра. Календарь без слоёв не запущен. */
+export function calendarLaunch(c: Pick<Calendar, 'layers' | 'timezone'>): number {
+  const hit = launchCache.get(c)
+  if (hit !== undefined) return hit
+  const v = c.layers.reduce((m, l) => Math.min(m, layerLaunch(l, c.timezone || DEFAULT_TZ)), Infinity)
+  launchCache.set(c, v)
+  return v
+}
+
+/** Дыра: календарь уже запущен, а дежурного нет. */
+export function isGapAt(c: Calendar, t: number): boolean {
+  return t >= calendarLaunch(c) && calendarOnCall(c, t).length === 0
+}
+
+/** Дата старта по умолчанию: ближайшая передача смены — сегодня, если время ещё не прошло, иначе завтра. */
+export function defaultStartDate(handoff: string, now: number, tz: string = DEFAULT_TZ): string {
+  const n = dayNumber(now, tz)
+  const d = now < atDay(n, hm(handoff), tz) ? n : n + 1
+  return new Date(d * DAY).toISOString().slice(0, 10)
+}
+
+/* ---------------- Пересечения между календарями ---------------- */
+
+export interface Conflict {
+  personId: string
+  start: number
+  end: number
+  calendarId: string
+  calendarName: string
+  layerName: string
+  /** пересечение с другим слоем того же календаря */
+  same: boolean
+}
+
+function intersect(a: { start: number; end: number }[], b: DutySpan[], personId: string, sameId: string): Conflict[] {
+  const out: Conflict[] = []
+  for (const x of a) for (const y of b) {
+    const s = Math.max(x.start, y.start)
+    const e = Math.min(x.end, y.end)
+    if (e > s) out.push({ personId, start: s, end: e, calendarId: y.calendarId, calendarName: y.calendarName, layerName: y.layerName, same: y.calendarId === sameId })
+  }
+  // соседние куски одного и того же пересечения склеиваем
+  out.sort((p, q) => p.calendarId.localeCompare(q.calendarId) || p.layerName.localeCompare(q.layerName) || p.start - q.start)
+  const merged: Conflict[] = []
+  for (const x of out) {
+    const last = merged[merged.length - 1]
+    if (last && last.calendarId === x.calendarId && last.layerName === x.layerName && x.start <= last.end) last.end = Math.max(last.end, x.end)
+    else merged.push({ ...x })
+  }
+  return merged
+}
+
+/**
+ * Пересечения слоя (в том числе ещё не сохранённого) с дежурствами тех же людей:
+ * в других календарях и в других слоях этого календаря.
+ */
+export function layerConflicts(draft: Layer, c: Calendar, calendars: Calendar[], from: number, to: number, step = HOUR): Conflict[] {
+  const tz = c.timezone || DEFAULT_TZ
+  const self = { ...c, layers: c.layers.filter((l) => l.id !== draft.id) }
+  const others = calendars.map((x) => (x.id === c.id ? self : x))
+  if (!others.some((x) => x.id === c.id)) others.push(self)
+  const breaks = isManual(draft) ? manualSlots(draft).flatMap((s) => [s.start, s.end]) : []
+  const out: Conflict[] = []
+  for (const p of draft.participants) {
+    const mine = sampleSegments(from, to, (t) => (removedAt(c, p, draft.id, t) || !layerOnCall(draft, t, tz).includes(p) ? null : p), step, breaks)
+    if (!mine.length) continue
+    const rel = others.filter((x) => x.layers.some((l) => l.participants.includes(p)) || x.shifts.some((s) => s.personId === p))
+    out.push(...intersect(mine, personDutySpans(rel, p, from, to, step), p, c.id))
+  }
+  return out.sort((a, b) => a.start - b.start)
+}
+
+/** Все пересечения людей календаря с их дежурствами в других местах. */
+export function calendarConflicts(c: Calendar, calendars: Calendar[], from: number, to: number, step = HOUR): Conflict[] {
+  const seen = new Set<string>()
+  const out: Conflict[] = []
+  for (const l of c.layers) for (const x of layerConflicts(l, c, calendars, from, to, step)) {
+    // пересечение двух слоёв одного календаря попадает дважды — оставляем одно
+    const k = `${x.personId}|${x.start}|${x.end}|${x.same ? [l.name, x.layerName].sort().join('/') : x.calendarId + x.layerName}`
+    if (seen.has(k)) continue
+    seen.add(k)
+    out.push(x)
+  }
+  return out.sort((a, b) => a.start - b.start)
+}
+
+/** Отпечаток слоёв и эскалации: проверка готовности действует, пока он не изменился. */
+export function readySig(c: Pick<Calendar, 'layers' | 'escalation' | 'timezone' | 'layerMode'>): string {
+  const s = JSON.stringify([c.layers, c.escalation, c.timezone, c.layerMode])
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0
+  return `${s.length}:${h}`
+}
+
+/** «ещё не запущено · старт 2 нояб, 10:00» — для календарей до первого старта; null, если уже дежурят. */
+export function launchNote(c: Calendar, now: number): string | null {
+  const launch = calendarLaunch(c)
+  if (now >= launch) return null
+  return Number.isFinite(launch) ? `ещё не запущено · старт ${fmtDT(launch, c.timezone || DEFAULT_TZ)}` : 'ещё не запущено · графика нет'
 }

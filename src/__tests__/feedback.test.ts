@@ -182,9 +182,12 @@ describe('6. шаблоны ротаций: только встроенные (�
     expect(queueSize(BUILTIN_TEMPLATES[2])).toBe(2) // 2/2
     expect(queueSize(BUILTIN_TEMPLATES[1])).toBeNull()
   })
-  test('шаблон → поля слоя; недельные — с понедельника', () => {
-    expect(templatePatch(BUILTIN_TEMPLATES[2], T, 'Europe/Moscow')).toMatchObject({ handoffTime: '09:00', rotation: { unit: 'day', count: 2 }, startsAt: '2026-10-30' })
-    expect(templatePatch(BUILTIN_TEMPLATES[1], T, 'Europe/Moscow').startsAt).toBe('2026-10-26')
+  test('шаблон → поля слоя; старт — ближайшая передача смены, а не понедельник', () => {
+    // пт 10:30 МСК: передача в 09:00 и в 10:00 уже прошла — старт завтра
+    expect(templatePatch(BUILTIN_TEMPLATES[2], T, 'Europe/Moscow')).toMatchObject({ handoffTime: '09:00', rotation: { unit: 'day', count: 2 }, startsAt: '2026-10-31' })
+    expect(templatePatch(BUILTIN_TEMPLATES[1], T, 'Europe/Moscow').startsAt).toBe('2026-10-31')
+    // передача в 12:00 ещё впереди — старт сегодня
+    expect(templatePatch({ ...BUILTIN_TEMPLATES[1], handoffTime: '12:00' }, T, 'Europe/Moscow').startsAt).toBe('2026-10-30')
   })
 })
 

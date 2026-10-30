@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent, type ReactNode, type Ref } from 'react'
 import { createPortal } from 'react-dom'
-import { addDays, calendarHandoff, calendarOnCall, DEFAULT_TZ, fmtDT, fmtDur, fmtT, HOUR, overlapRanges, personDutySpans, snapDuty, startOfDay, teamCoverage, uid, weekday, type CoverSeg, type DutySpan } from './engine'
+import { addDays, calendarHandoff, DEFAULT_TZ, isGapAt, fmtDT, fmtDur, fmtT, HOUR, overlapRanges, personDutySpans, snapDuty, startOfDay, teamCoverage, uid, weekday, type CoverSeg, type DutySpan } from './engine'
 import { useNow, useStore } from './store'
 import { fmtTz, startOfMonthTz, tzLabel, tzName } from './tz'
 import type { Calendar, Person } from './types'
@@ -103,7 +103,8 @@ export function TeamTimeline({ team }: { team: string }) {
 
   const cover = useMemo(() => (teamCals.length ? teamCoverage(teamCals, from, to) : []), [teamCals, from, to])
   const hasGap = cover.some((c) => c.gap)
-  const nowGap = teamCals.some((c) => calendarOnCall(c, now).length === 0)
+  const nowGap = teamCals.some((c) => isGapAt(c, now))
+  const hasPending = cover.some((c) => !c.gap && !!c.pendingNames)
   const selCal = teamCals.find((c) => c.id === calId) ?? teamCals[teamCals.length - 1]
   const selTz = selCal?.timezone ?? tz
   const handoff = calendarHandoff(selCal?.layers ?? [])
@@ -148,7 +149,7 @@ export function TeamTimeline({ team }: { team: string }) {
       lines: [
         `${duty.calendarName} · ${duty.layerName}${duty.kind === 'override' ? ' (подмена)' : ''}`,
         ...(duty.replacedId ? [`Вместо: ${state.people.find((x) => x.id === duty.replacedId)?.name ?? ''}`] : []),
-        `${fmtDT(duty.start, ctz)} — ${fmtDT(duty.end, ctz)} · ${fmtDur(duty.end - duty.start)}`,
+        `${fmtDT(duty.start, ctz)} — ${fmtDT(duty.end, ctz)} · ${fmtDur(duty.end - duty.start)}${duty.start <= from || duty.end >= to ? ' (видимая часть)' : ''}`,
         `Часовой пояс: ${tzName(ctz)}`,
         ...(duty.note ? [duty.note] : []),
         ...(overlapped ? ['Конфликт: в это время у человека ещё одна смена'] : []),
@@ -353,7 +354,7 @@ export function TeamTimeline({ team }: { team: string }) {
                 <div className="sticky left-0 z-20 flex w-48 shrink-0 flex-col justify-center bg-surface px-4 py-3">
                   <div className="text-sm font-medium">Покрытие</div>
                   <div data-testid="coverage-note" className={`text-xs ${hasGap ? 'text-danger' : 'text-faint'}`}>
-                    {hasGap ? (nowGap ? 'Сейчас есть календарь без дежурного' : 'Сейчас покрыто, в этом окне есть дыры') : 'В этом окне дыр нет'}
+                    {hasGap ? (nowGap ? 'Сейчас есть календарь без дежурного' : 'Сейчас покрыто, в этом окне есть дыры') : hasPending ? 'Дыр нет · серым — ещё не запущено' : 'В этом окне дыр нет'}
                   </div>
                 </div>
                 <div className="relative h-12 flex-1">
@@ -364,6 +365,13 @@ export function TeamTimeline({ team }: { team: string }) {
                       onMouseEnter={(e) => showTip(e, 'Нет дежурного', [c.gapNames || 'Календарь команды', `${fmtDT(c.start, tz)} — ${fmtDT(c.end, tz)} ${zl}`, 'Дыра в видимом окне. Счётчик на главной считает только текущий момент.'])}
                       onMouseLeave={() => setTip(null)}>
                       {(c.end - c.start) / span > 0.08 ? 'Нет дежурного' : ''}
+                    </div>
+                  ) : c.pendingNames ? (
+                    <div key={c.start} data-testid="prelaunch" className="absolute inset-y-2 flex items-center overflow-hidden rounded-md bg-surface-2 px-2 text-xs whitespace-nowrap text-muted"
+                      style={box(c.start, c.end)}
+                      onMouseEnter={(e) => showTip(e, 'Ещё не запущено', [`«${c.pendingNames}»: дежурства ещё не начались`, `${fmtDT(c.start, tz)} — ${fmtDT(c.end, tz)} ${zl}`, 'Это не дыра: время до первого старта календаря.'])}
+                      onMouseLeave={() => setTip(null)}>
+                      {(c.end - c.start) / span > 0.12 ? 'Ещё не запущено' : ''}
                     </div>
                   ) : (
                     <div key={c.start} className="absolute top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-ok/70" style={box(c.start, c.end)} />

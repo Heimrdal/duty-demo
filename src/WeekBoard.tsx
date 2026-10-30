@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, type PointerEvent as RPointerEvent } from 'react'
-import { addDays, fmtDT, fmtDur, HOUR, isManual, startOfDay, weekday } from './engine'
+import { addDays, calendarLaunch, fmtDT, fmtDur, HOUR, isManual, startOfDay, weekday } from './engine'
 import { useStore } from './store'
 import { atDay, dayNumber, fmtTz, tzName, zparts } from './tz'
 import type { BarTarget } from './Timeline'
@@ -31,7 +31,7 @@ export function WeekBoard(props: WeekBoardProps) {
       {weeks.map((ws) => <WeekBlock key={ws} ws={ws} {...props} setInfo={setInfo} />)}
       {canEdit && (
         <button type="button" data-testid="add-layer" onClick={onAddLayer} className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-line-strong py-3 text-sm text-muted hover:bg-surface-2 hover:text-ink">
-          <span aria-hidden className="text-lg leading-none">+</span>Добавить слой
+          <span aria-hidden className="text-lg leading-none">+</span>Добавить график дежурств
         </button>
       )}
       {!c.layers.length && !canEdit && <p className="text-sm text-muted">Слоёв пока нет.</p>}
@@ -62,11 +62,12 @@ function WeekBlock({ c, ws, month, now, canEdit, actions, onFill, onCreate, onCo
     const removal = card.state === 'removed' && card.shiftId ? c.shifts.find((x) => x.id === card.shiftId) : undefined
     const shift = card.state === 'subst' || (!layer && card.shiftId) ? c.shifts.find((x) => x.id === card.shiftId) : undefined
     const instead = card.replaced ? byId(card.replaced)?.name : undefined
+    const full = card.full ?? { start: card.start, end: card.end, hours: card.active.reduce((s, x) => s + x.end - x.start, 0) / HOUR }
     const lines = [
       `${c.name} · ${layer ? layer.name : shift?.replacesPersonId ? 'Подмена' : 'Разовое'}${layer && isManual(layer) ? ' (ручной график)' : ''}`,
       ...(card.state === 'removed' ? ['Снят(а) с дежурства'] : []),
       ...(instead ? [`Подмена: вместо ${instead}`] : []),
-      `${fmtDT(card.start, tz)} — ${fmtDT(card.end, tz)} · ${fmtDur(card.active.reduce((s, x) => s + x.end - x.start, 0))}`,
+      `${fmtDT(full.start, tz)} — ${fmtDT(full.end, tz)} · ${fmtDur(full.hours * HOUR)}`,
       ...(card.active.length > 1 ? ['Штриховка — часы вне смены по правилам слоя'] : []),
       `Часовой пояс: ${tzName(tz)}`,
       ...(card.note ? [card.note] : []),
@@ -74,7 +75,7 @@ function WeekBlock({ c, ws, month, now, canEdit, actions, onFill, onCreate, onCo
     ]
     setInfo({
       title: p.name, lines, rect: barRect(el),
-      actions: actions({ personId: card.personId, start: removal ? +new Date(removal.start) : card.start, end: removal ? +new Date(removal.end) : card.end, shift, layerId: layer?.id, removal, slotId: card.state === 'normal' ? card.slotId : undefined }),
+      actions: actions({ personId: card.personId, start: removal ? +new Date(removal.start) : full.start, end: removal ? +new Date(removal.end) : full.end, shift, layerId: layer?.id, removal, slotId: card.state === 'normal' ? card.slotId : undefined }),
     })
   }
 
@@ -110,8 +111,14 @@ function WeekBlock({ c, ws, month, now, canEdit, actions, onFill, onCreate, onCo
             ))}
             {!board.groups.length && <p className="px-3 py-4 text-sm text-muted">В календаре нет слоёв.</p>}
             {/* итог: где во всём календаре никого нет */}
-            {board.gaps.length > 0 && (
+            {(board.gaps.length > 0 || board.prelaunch) && (
               <div className="relative mt-2 h-8 border-t border-line" data-testid="week-gaps">
+                {board.prelaunch && (() => {
+                  const x = board.prelaunch
+                  const w = pct(x.end) - pct(x.start)
+                  const label = Number.isFinite(calendarLaunch(c)) ? `Ещё не запущено · старт ${fmtDT(calendarLaunch(c), tz)}` : 'Ещё не запущено · графика нет'
+                  return <div data-testid="prelaunch" className="absolute top-1 bottom-1 flex items-center overflow-hidden rounded-md bg-surface-2 px-1.5 text-[11px] whitespace-nowrap text-muted" style={{ left: `${pct(x.start)}%`, width: `${w}%` }} title={label}>{w > 6 ? (w > 22 ? label : 'Ещё не запущено') : ''}</div>
+                })()}
                 {board.gaps.map((x) => {
                   const fillable = onFill && x.end > now
                   const w = pct(x.end) - pct(x.start)
@@ -143,7 +150,7 @@ function LayerMenu({ l, ws, now, tz, onCreate, onCopyWeek, onRepeat, onEditLayer
       { label: 'Скопировать неделю на следующую', onClick: () => onCopyWeek(l, ws) },
       { label: 'Повторить неделю на N недель…', onClick: () => onRepeat(l, ws) },
     ] : []),
-    { label: 'Изменить слой', onClick: () => onEditLayer(l) },
+    { label: 'Изменить график', onClick: () => onEditLayer(l) },
   ]
   return <span className="ml-1"><Menu label={`Действия со слоем «${l.name}»`} items={items} /></span>
 }

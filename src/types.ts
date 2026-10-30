@@ -96,6 +96,8 @@ export interface Calendar {
   shifts: Shift[]
   escalation: EscStep[]
   repeat: number
+  /** «Проверка перед запуском» пройдена: когда и для какой версии графика (см. readySig) */
+  readyCheck?: { at: string; sig: string; by?: string }
 }
 
 export interface NotifySettings {

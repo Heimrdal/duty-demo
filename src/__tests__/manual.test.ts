@@ -166,7 +166,7 @@ describe('t52u. расписание по неделям', () => {
     expect(cardTime({ start: at('2026-10-26', 8), end: at('2026-10-26', 20), active: [{ start: at('2026-10-26', 8), end: at('2026-10-26', 20) }] }, MSK)).toBe('08:00 – 20:00 (12ч)')
     const multi = { start: at('2026-10-26', 9), end: at('2026-10-30', 18), active: [0, 1, 2, 3, 4].map((d) => ({ start: at('2026-10-26', 9) + d * 24 * HOUR, end: at('2026-10-26', 18) + d * 24 * HOUR })) }
     expect(cardTime(multi, MSK)).toBe('пн 09:00 – пт 18:00 (45ч)')
-    expect(cardTime(multi, MSK, true)).toBe('09:00–18:00')
+    expect(cardTime(multi, MSK, true)).toBe('пн–пт')
   })
   test('привязка к часу при протягивании', () => {
     const ws = at('2026-10-26', 0), we = at('2026-11-02', 0)

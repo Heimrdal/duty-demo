@@ -1,4 +1,4 @@
-import { addDays, isoDate, startOfDay, weekday } from './engine'
+import { defaultStartDate } from './engine'
 import type { Layer, LayerKind, Restriction, RotationTemplate, RotationUnit } from './types'
 
 export interface TemplateItem extends RotationTemplate { builtin: boolean }
@@ -42,12 +42,10 @@ export function templateHint(t: RotationTemplate): string {
   return parts.join(', ')
 }
 
-/** Поля слоя из шаблона. Недельные ротации стартуют с понедельника. */
+/** Поля слоя из шаблона. Старт — ближайшая передача смены (сегодня или завтра), а не начало недели. */
 export function templatePatch(t: RotationTemplate, now: number, tz: string): Partial<Layer> {
-  const today = startOfDay(now, tz)
-  const start = t.rotation.unit === 'week' ? addDays(today, -weekday(today, tz), tz) : today
   return {
-    kind: t.kind, startsAt: isoDate(start, tz), handoffTime: t.handoffTime,
+    kind: t.kind, startsAt: defaultStartDate(t.handoffTime, now, tz), handoffTime: t.handoffTime,
     rotation: { ...t.rotation }, parallel: t.parallel,
     restriction: { ...t.restriction, days: [...t.restriction.days] },
   }

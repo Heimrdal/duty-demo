@@ -191,7 +191,7 @@ export function Empty({ title, text, action }: { title: string; text?: string; a
   )
 }
 
-export function Menu({ label = 'Ещё', items }: { label?: string; items: { label: string; onClick: () => void; danger?: boolean; disabled?: boolean }[] }) {
+export function Menu({ label = 'Ещё', items, trigger }: { label?: string; items: { label: string; onClick: () => void; danger?: boolean; disabled?: boolean }[]; trigger?: { text: ReactNode; className: string; testId?: string } }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -204,7 +204,9 @@ export function Menu({ label = 'Ещё', items }: { label?: string; items: { lab
   }, [open])
   return (
     <div ref={ref} className="relative">
-      <button type="button" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)} className="rounded-md px-2 py-1 text-sm tracking-widest text-faint hover:bg-surface-2 hover:text-ink">···</button>
+      {trigger
+        ? <button type="button" data-testid={trigger.testId} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)} className={trigger.className}>{trigger.text}</button>
+        : <button type="button" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)} className="rounded-md px-2 py-1 text-sm tracking-widest text-faint hover:bg-surface-2 hover:text-ink">···</button>}
       {open && (
         <div role="menu" aria-label={label} className="popover-in absolute right-0 z-30 mt-1 min-w-44 rounded-lg border border-line bg-surface p-1 shadow-card">
           {items.map((it) => (

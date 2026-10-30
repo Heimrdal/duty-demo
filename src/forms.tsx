@@ -1,5 +1,5 @@
 import { useId, useMemo, useRef, useState } from 'react'
-import { addDays, addGap, calendarOnCall, describePattern, makeRemoval, makeSlot, manualSlots, fmtDT, fmtDur, HOUR, hm, isoDate, layerBoundary, layerOnCall, overlapWarning, repeatSlots, rotationLabel, startOfDay, uid, weekday, withSlots } from './engine'
+import { addDays, addGap, calendarOnCall, defaultStartDate, describePattern, layerAnchor, layerConflicts, layerLaunch, type Conflict, makeRemoval, makeSlot, manualSlots, fmtDT, fmtDur, HOUR, hm, layerBoundary, layerOnCall, overlapWarning, repeatSlots, rotationLabel, startOfDay, uid, weekday, withSlots } from './engine'
 import { makeShift, teamFirstIds, upsertShift } from './perm'
 import { atDay, dayNumber, DEFAULT_TZ, fromInputTz, toInputTz, tzLabel } from './tz'
 import { PersonPicker } from './PersonPicker'
@@ -133,17 +133,48 @@ export function TakeDutyModal({ calendarId, onClose }: { calendarId?: string; on
   )
 }
 
+/* ---------------- Пересечения с другими дежурствами ---------------- */
+/** Кто, когда и в каком календаре уже дежурит в те же часы. Предупреждение: сохранить всё равно можно. */
+export function ConflictList({ items, tz, from, limit = 8, title = 'Пересечения с другими дежурствами' }: { items: Conflict[]; tz: string; from: number; limit?: number; title?: string }) {
+  const { state } = useStore()
+  const byId = peopleById(state.people)
+  const people = new Set(items.map((x) => x.personId)).size
+  return (
+    <div data-testid="conflicts" data-count={items.length} className={`rounded-lg px-3 py-2.5 text-sm ${items.length ? 'bg-warn/10' : 'bg-surface-2'}`}>
+      <div className="font-medium">{title} <span className="font-normal text-muted">· 4 недели с {fmtDT(from, tz)}</span></div>
+      {!items.length ? <p className="mt-1 text-muted">Пересечений нет: в эти часы у участников нет других дежурств.</p> : (
+        <>
+          <p className="mt-1 text-muted">{items.length} {items.length === 1 ? 'пересечение' : items.length < 5 ? 'пересечения' : 'пересечений'} у {people} {people === 1 ? 'человека' : 'человек'}. Сохранить можно — убедитесь, что человек справится с двумя дежурствами сразу.</p>
+          <ul className="mt-2 space-y-1">
+            {items.slice(0, limit).map((x, i) => (
+              <li key={i} data-testid="conflict-row" className="flex flex-wrap items-baseline gap-x-2">
+                <span className="font-medium">{byId.get(x.personId)?.name ?? x.personId}</span>
+                <span className="text-muted">{fmtDT(x.start, tz)} — {fmtDT(x.end, tz)} ({fmtDur(x.end - x.start)})</span>
+                <span>{x.same ? `этот календарь, «${x.layerName}»` : `«${x.calendarName}», ${x.layerName}`}</span>
+              </li>
+            ))}
+          </ul>
+          {items.length > limit && <p className="mt-1 text-xs text-muted">и ещё {items.length - limit}</p>}
+        </>
+      )}
+    </div>
+  )
+}
+
 /* ---------------- Мастер слоя ротации ---------------- */
-export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer; onClose: () => void }) {
+export function LayerWizard({ c, layer, onClose, onSaved }: { c: Calendar; layer?: Layer; onClose: () => void; onSaved?: () => void }) {
   const { state, updateCalendar, toast } = useStore()
+  const [opened] = useState(() => Date.now())
+  // дату старта пересчитываем по времени передачи, пока человек не выбрал её сам
+  const [startTouched, setStartTouched] = useState(!!layer)
   const tz = c.timezone || DEFAULT_TZ
   const [step, setStep] = useState(0)
   const [tpl, setTpl] = useState<string | null>(null)
   const [l, setL] = useState<Layer>(layer ?? {
-    id: uid(), name: '', kind: 'primary', startsAt: isoDate(Date.now(), tz), handoffTime: '10:00', rotation: { unit: 'week', count: 1 },
+    id: uid(), name: '', kind: 'primary', startsAt: defaultStartDate('10:00', Date.now(), tz), handoffTime: '10:00', rotation: { unit: 'week', count: 1 },
     participants: state.currentUserId ? [state.currentUserId] : [], parallel: 1, restriction: { type: 'none', from: '09:00', to: '18:00', days: [0, 1, 2, 3, 4] },
   })
-  const set = (patch: Partial<Layer>) => setL((x) => ({ ...x, ...patch }))
+  const set = (patch: Partial<Layer>) => setL((x) => ({ ...x, ...patch, ...(patch.handoffTime && !startTouched && !patch.startsAt ? { startsAt: defaultStartDate(patch.handoffTime, opened, tz) } : {}) }))
   const steps = ['Название и тип', 'Ротация', 'Участники', 'Часы дежурства', 'Проверка']
   const teamIds = useMemo(() => teamFirstIds(c, state.people), [c, state.people])
   const byId = peopleById(state.people)
@@ -173,6 +204,7 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
     setL((x) => ({
       ...x,
       ...patch,
+      startsAt: startTouched ? x.startsAt : patch.startsAt ?? x.startsAt,
       name: !x.name.trim() || templates.some((p) => p.name === x.name) ? t.name : x.name,
       rotation: patch.rotation ? { ...patch.rotation } : x.rotation,
       restriction: patch.restriction ? { ...patch.restriction, days: [...patch.restriction.days] } : x.restriction,
@@ -182,7 +214,9 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
   const save = () => {
     const fixed = manual ? withSlots({ ...l, parallel: Math.max(1, l.parallel) }, l.slots ?? []) : { ...l, parallel: Math.max(1, Math.min(l.parallel, l.participants.length)) }
     updateCalendar(c.id, (cal) => ({ ...cal, layers: layer ? cal.layers.map((x) => (x.id === l.id ? fixed : x)) : [...cal.layers, fixed] }))
-    toast(layer ? 'Слой обновлён' : `Слой «${l.name}» добавлен в календарь «${c.name}»`)
+    // дальше — «Проверка перед запуском»; без неё просто сообщаем, что график сохранён
+    if (onSaved) onSaved()
+    else toast(`График «${l.name}» сохранён`)
     onClose()
   }
   const preview = useMemo(() => {
@@ -193,6 +227,26 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
     })
   }, [l, tz])
   const dayNames = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+  const firstStart = layerAnchor(l, tz)
+  const pastStart = !layer && firstStart < opened - HOUR
+  const startField = (
+    <Field label="С какой даты команда начинает дежурить?" error={err('start')}
+      hint={manual ? 'До этой даты календарь «ещё не запущен»: это не считается дырой.' : `Первая смена: ${fmtDT(firstStart, tz)} ${tzLabel(tz)}. До неё календарь «ещё не запущен» — это не дыра.`}>
+      <input type="date" data-testid="start-date" className={`${inputCls} max-w-56`} value={l.startsAt} onChange={(e) => { setStartTouched(true); set({ startsAt: e.target.value }) }} />
+      {pastStart && (
+        <p role="status" data-testid="start-past" className="mt-2 rounded-lg bg-warn/10 px-3 py-2 text-sm text-ink">
+          Дата в прошлом: график будет считаться так, будто дежурства уже идут с {fmtDT(firstStart, tz)}.{' '}
+          <button type="button" className="font-medium text-accent hover:underline" onClick={() => { setStartTouched(false); set({ startsAt: defaultStartDate(l.handoffTime, Date.now(), tz) }) }}>Начать с ближайшей передачи</button>
+        </p>
+      )}
+    </Field>
+  )
+  // пересечения с другими дежурствами тех же людей — на последнем шаге
+  const conflictWindow = useMemo(() => {
+    const from = Math.max(Math.floor(opened / HOUR) * HOUR, Math.floor(Math.min(layerLaunch(l, tz), opened + 365 * 24 * HOUR) / HOUR) * HOUR)
+    return { from, to: from + 28 * 24 * HOUR }
+  }, [l, tz, opened])
+  const conflicts = useMemo(() => (step === 4 ? layerConflicts(l, c, state.calendars, conflictWindow.from, conflictWindow.to) : []), [step, l, c, state.calendars, conflictWindow])
   const active = templates.find((t) => t.id === tpl)
   const pattern = describePattern(l, (id) => state.people.find((p) => p.id === id)?.name ?? id)
   // ритм шаблона «N через M» получается только при нужной длине очереди
@@ -208,7 +262,7 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
   )
 
   return (
-    <Modal title={layer ? l.name || 'Слой' : 'Добавить слой'} onClose={onClose} wide>
+    <Modal title={layer ? l.name || 'График дежурств' : 'Добавить график дежурств'} onClose={onClose} wide>
       <div className="mb-6 flex items-center justify-between gap-4 text-sm">
         <div className="text-muted">Шаг {pos + 1} из {order.length} · {steps[step]}</div>
         <div className="flex gap-1">
@@ -220,9 +274,9 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
       <div ref={bodyRef}>
       {step === 0 && (
         <div className="space-y-6">
-          <Field label="Как заполняется слой">
+          <Field label="Как составляется график">
             {layer ? <p className="text-sm text-muted">{manual ? 'Ручной график — дежурства расставляются на вкладке «Расписание».' : 'Ротация — по очереди, автоматически.'}</p> : (
-              <div className="grid gap-2 sm:grid-cols-2" role="group" aria-label="Как заполняется слой">
+              <div className="grid gap-2 sm:grid-cols-2" role="group" aria-label="Как составляется график">
                 {([['rotation', 'Ротация', 'По очереди, автоматически: шаблон, участники, часы'], ['manual', 'Ручной график', 'Дежурства расставляете сами — по часам, на неделе']] as const).map(([m, t, d]) => (
                   <button key={m} type="button" data-testid={`mode-${m}`} aria-pressed={(m === 'manual') === manual} onClick={() => setMode(m)}
                     className={`rounded-lg border px-3 py-2.5 text-left text-sm ${(m === 'manual') === manual ? 'border-accent bg-accent-soft' : 'border-line hover:bg-surface-2'}`}>
@@ -248,7 +302,7 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
             </div>
             {active && <p className="mt-2 text-sm text-muted">Выбран шаблон «{active.name}».</p>}
           </div>}
-          <Field label="Название слоя" hint="Что покрывает слой: основная смена, ночь, резерв." error={err('name')}>
+          <Field label="Название графика" hint="Что покрывает график: основная смена, ночь, резерв. Если графиков в календаре несколько, это его слои." error={err('name')}>
             <input autoFocus data-testid="layer-name" className={inputCls} value={l.name} onChange={(e) => set({ name: e.target.value })} placeholder={manual ? 'Например: Вторая линия, смены 12 часов' : 'Например: Основная ротация разработки'} />
           </Field>
           <Field label="Тип дежурства">
@@ -265,6 +319,7 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
               <select data-testid="manual-parallel" className={`${inlineCls} w-28`} value={l.parallel} onChange={(e) => set({ parallel: +e.target.value })}>{[1, 2, 3, 4].map((n) => <option key={n} value={n}>{n}</option>)}</select>
             </Field>
           )}
+          {manual && startField}
         </div>
       )}
       {step === 1 && (
@@ -283,9 +338,9 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
             </div>
           </Field>
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Начало ротации" error={err('start')}><input type="date" className={inputCls} value={l.startsAt} onChange={(e) => set({ startsAt: e.target.value })} /></Field>
             <Field label={`Передача смены, ${tzLabel(tz)}`}><input type="time" className={inputCls} value={l.handoffTime} onChange={(e) => set({ handoffTime: e.target.value })} /></Field>
           </div>
+          {startField}
         </div>
       )}
       {step === 2 && (
@@ -324,7 +379,7 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
               })}
             </ol>
             <div className="mt-6">
-              <Field label="Сколько человек одновременно" hint="Для второй группы заведите ещё один слой.">
+              <Field label="Сколько человек одновременно" hint="Для второй группы добавьте ещё один график дежурств.">
                 <p className="mb-2 text-sm font-medium" data-testid="parallel-state">Выбрано: {l.parallel} одновременно</p>
                 <div className="flex gap-2">
                   {[1, 2, 3, 4, 5].map((n) => {
@@ -348,7 +403,7 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
       {step === 3 && (
         <div className="space-y-6">
           {active && <p className="text-sm text-muted">Часы из шаблона «{active.name}».</p>}
-          <Field label="Когда слой активен" hint="Вне этих часов работают другие слои календаря." error={err('days')}>
+          <Field label="Когда график активен" hint="Вне этих часов работают другие графики календаря." error={err('days')}>
             <div className="grid grid-cols-3 gap-2 text-sm">
               {([['none', 'Круглосуточно', '24×7'], ['daily', 'Каждый день', 'в заданные часы'], ['weekly', 'По дням недели', 'например, выходные']] as const).map(([v, a, b]) => (
                 <button key={v} type="button" aria-pressed={l.restriction.type === v} onClick={() => set({ restriction: { ...l.restriction, type: v } })} className={`rounded-lg border px-3 py-2 text-left ${l.restriction.type === v ? 'border-accent bg-accent-soft' : 'border-line'}`}><span className="font-medium">{a}</span><div className="text-xs text-muted">{b}</div></button>
@@ -377,6 +432,7 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
           <p>Ручной график · мест одновременно: {l.parallel} · {tzLabel(tz)}</p>
           <p className="text-muted">Автоматической ротации нет. После сохранения откройте «Расписание»: протяните по строке слоя, чтобы выбрать часы, или нажмите на пустое место — и выберите дежурного. «Скопировать неделю» и «Повторить на N недель» — в меню слоя.</p>
           {!!l.slots?.length && <p className="text-muted">Дежурств в графике: {l.slots.length}</p>}
+          <ConflictList items={conflicts} tz={tz} from={conflictWindow.from} />
         </div>
       )}
       {step === 4 && !manual && (
@@ -393,6 +449,8 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
               </div>
             ))}
           </div>
+          <p className="text-muted">Старт: {fmtDT(firstStart, tz)} {tzLabel(tz)}{pastStart ? ' — дата в прошлом' : ''}</p>
+          <ConflictList items={conflicts} tz={tz} from={conflictWindow.from} />
         </div>
       )}
       {tried === step && <div className="mt-4"><FormErrors missing={Object.values(stepErrors).map((e) => e!.label)} /></div>}
@@ -400,7 +458,7 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
       <div className="mt-8 flex flex-wrap items-center justify-between gap-2">
         <Btn variant="ghost" onClick={back}>{pos ? 'Назад' : 'Отмена'}</Btn>
         <div className="flex gap-2">
-          {pos < order.length - 1 ? <Btn data-testid="wizard-next" onClick={next}>Далее</Btn> : <Btn data-testid="wizard-save" onClick={save}>Сохранить слой</Btn>}
+          {pos < order.length - 1 ? <Btn data-testid="wizard-next" onClick={next}>Далее</Btn> : <Btn data-testid="wizard-save" onClick={save}>{conflicts.length ? 'Сохранить, несмотря на пересечения' : 'Сохранить график'}</Btn>}
         </div>
       </div>
     </Modal>

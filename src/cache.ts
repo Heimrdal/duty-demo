@@ -3,7 +3,7 @@
  * Календари неизменяемые: любое изменение создаёт новый объект, поэтому WeakMap по объекту календаря
  * безопасен — старые записи уходят вместе со старыми объектами.
  */
-import { calendarOnCall, DAY, HOUR, type OnCallEntry } from './engine'
+import { calendarLaunch, calendarOnCall, DAY, HOUR, type OnCallEntry } from './engine'
 import type { Calendar } from './types'
 
 const MIN = 60_000
@@ -20,14 +20,14 @@ export function onCallAt(c: Calendar, t: number): OnCallEntry[] {
 }
 
 const weekCache = new WeakMap<Calendar, { h: number; v: boolean }>()
-/** Есть ли в ближайшие 7 дней час без дежурного. Один расчёт на календарь в час. */
+/** Есть ли в ближайшие 7 дней час без дежурного (после первого старта календаря). Один расчёт на календарь в час. */
 export function hasWeekGap(c: Calendar, now: number): boolean {
   const h = Math.floor(now / HOUR)
   const hit = weekCache.get(c)
   if (hit && hit.h === h) return hit.v
   let v = false
-  if (!c.layers.length) v = true
-  else for (let t = h * HOUR; t < now + 7 * DAY; t += HOUR) if (calendarOnCall(c, t + 1).length === 0) { v = true; break }
+  const launch = calendarLaunch(c)
+  for (let t = h * HOUR; t < now + 7 * DAY; t += HOUR) if (t + 1 >= launch && calendarOnCall(c, t + 1).length === 0) { v = true; break }
   weekCache.set(c, { h, v })
   return v
 }
@@ -38,6 +38,8 @@ export interface OnCallIndex {
   /** сотрудник → календари, где он дежурит сейчас */
   byPerson: Map<string, Calendar[]>
   gapsNow: Calendar[]
+  /** календари, которые ещё не запущены (нет графика или старт в будущем) — не дыры */
+  pendingNow: Calendar[]
   totalOnCall: number
 }
 
@@ -49,17 +51,18 @@ export function onCallIndex(calendars: Calendar[], now: number): OnCallIndex {
   const byCalendar = new Map<string, OnCallEntry[]>()
   const byPerson = new Map<string, Calendar[]>()
   const gapsNow: Calendar[] = []
+  const pendingNow: Calendar[] = []
   for (const c of calendars) {
     const e = onCallAt(c, now)
     byCalendar.set(c.id, e)
-    if (!e.length) gapsNow.push(c)
+    if (!e.length) (now >= calendarLaunch(c) ? gapsNow : pendingNow).push(c)
     for (const x of e) {
       const a = byPerson.get(x.personId)
       if (a) a.push(c)
       else byPerson.set(x.personId, [c])
     }
   }
-  const v = { byCalendar, byPerson, gapsNow, totalOnCall: byPerson.size }
+  const v = { byCalendar, byPerson, gapsNow, pendingNow, totalOnCall: byPerson.size }
   lastIndex = { cals: calendars, m, v }
   return v
 }
