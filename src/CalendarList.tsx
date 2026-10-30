@@ -5,8 +5,8 @@ import { fmtDT, nextHandoff } from './engine'
 import type { CalFilter, Coverage } from './search'
 import { peopleById, useStore } from './store'
 import { tzLabel } from './tz'
-import type { Calendar, CalendarType } from './types'
-import { Avatar, Card, ContactActions, EscalationChain, inputCls, TYPE_META } from './ui'
+import type { Calendar } from './types'
+import { Avatar, Card, ContactActions, EscalationChain, inputCls } from './ui'
 
 export function StarButton({ on, name, onToggle, className = '' }: { on: boolean; name: string; onToggle: () => void; className?: string }) {
   return (
@@ -25,13 +25,13 @@ export function OnCallCard({ c, now, fav, onFav }: { c: Calendar; now: number; f
   const byId = peopleById(state.people)
   const entries = onCallAt(c, now)
   const lead = byId.get(c.leadId)
-  const handoffs = c.layers.map((l) => nextHandoff(l, now, c.timezone))
+  const handoffs = c.layers.map((l) => nextHandoff(l, now, c.timezone)).filter((x) => Number.isFinite(x))
   const nextH = handoffs.length ? Math.min(...handoffs) : null
   const me = state.currentUserId
   return (
     <Card className="flex flex-col" >
       <div className="flex items-start gap-3 px-5 pt-5" data-testid="oncall-card">
-        <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full" style={{ background: TYPE_META[c.type].color }} />
+        <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full" style={{ background: entries.length ? 'var(--c-ok)' : 'var(--c-danger)' }} title={entries.length ? 'Есть дежурный' : 'Никто не дежурит'} />
         <div className="min-w-0 flex-1">
           <a href={`#/calendars/${c.id}`} className="text-base font-medium hover:text-accent">{c.name}</a>
           <div className="mt-0.5 truncate text-sm text-muted">{c.product}</div>
@@ -70,10 +70,10 @@ export function CalendarRow({ c, now, org, fav, onFav }: { c: Calendar; now: num
   const first = entries[0] ? byId.get(entries[0].personId) : undefined
   return (
     <li className="flex items-center gap-3 px-1 py-2.5" data-testid="calendar-row">
-      <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: TYPE_META[c.type].color }} title={TYPE_META[c.type].label} />
+      <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: entries.length ? 'var(--c-ok)' : 'var(--c-danger)' }} title={entries.length ? 'Есть дежурный' : 'Никто не дежурит'} />
       <div className="min-w-0 flex-1 sm:w-[38%] sm:flex-none">
         <a href={`#/calendars/${c.id}`} className="block truncate text-sm font-medium hover:text-accent">{c.name}</a>
-        <div className="truncate text-xs text-faint">{org}</div>
+        <div className="truncate text-xs text-faint" data-testid="calendar-row-team">{c.team !== c.name ? `Команда «${c.team}»${org ? ` · ${org}` : ''}` : org}</div>
       </div>
       <div className="hidden min-w-0 flex-1 items-center gap-2 sm:flex">
         {first ? (
@@ -94,10 +94,10 @@ const COVERAGE: [Coverage, string][] = [['all', 'Любое покрытие'], 
 const selCls = 'rounded-lg border border-line-strong bg-surface px-2.5 py-2 text-sm text-ink outline-none focus:border-accent'
 
 export function CalendarFilters({ f, set, orgs, label = 'Поиск календарей' }: { f: CalFilter; set: (f: CalFilter) => void; orgs: string[]; label?: string }) {
-  const active = f.q || f.coverage !== 'all' || f.org || f.type !== 'all'
+  const active = f.q || f.coverage !== 'all' || f.org
   return (
     <div className="flex flex-wrap items-center gap-2" role="search" aria-label="Фильтры календарей">
-      <input aria-label={label} type="search" data-testid="cal-search" className={`${inputCls} w-full sm:w-64`} placeholder="Название, система, команда" value={f.q} onChange={(e) => set({ ...f, q: e.target.value })} />
+      <input aria-label={label} type="search" data-testid="cal-search" className={`${inputCls} w-full sm:w-64`} placeholder="Календарь, команда или система" value={f.q} onChange={(e) => set({ ...f, q: e.target.value })} />
       <select aria-label="Покрытие" data-testid="cal-coverage" className={`${selCls} ${f.coverage !== 'all' ? 'border-accent text-accent' : ''}`} value={f.coverage} onChange={(e) => set({ ...f, coverage: e.target.value as Coverage })}>
         {COVERAGE.map(([k, v]) => <option key={k} value={k}>{v}</option>)}
       </select>
@@ -105,11 +105,7 @@ export function CalendarFilters({ f, set, orgs, label = 'Поиск календ
         <option value="">Все подразделения</option>
         {orgs.map((o) => <option key={o} value={o}>{o}</option>)}
       </select>
-      <select aria-label="Тип" data-testid="cal-type" className={selCls} value={f.type} onChange={(e) => set({ ...f, type: e.target.value as CalendarType | 'all' })}>
-        <option value="all">Все типы</option>
-        {(Object.keys(TYPE_META) as CalendarType[]).map((t) => <option key={t} value={t}>{TYPE_META[t].label}</option>)}
-      </select>
-      {active && <button type="button" className="px-1 text-sm text-muted hover:text-ink" onClick={() => set({ q: '', coverage: 'all', org: '', type: 'all' })}>Сбросить</button>}
+      {active && <button type="button" className="px-1 text-sm text-muted hover:text-ink" onClick={() => set({ q: '', coverage: 'all', org: '' })}>Сбросить</button>}
     </div>
   )
 }

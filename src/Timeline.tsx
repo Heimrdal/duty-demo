@@ -1,16 +1,14 @@
 import { useMemo, useState } from 'react'
-import { addDays, calendarOnCall, fmtDT, fmtDur, HOUR, layerSlot, removedAt, samplePoints, sampleSegments, startOfDay, weekday, type Segment } from './engine'
+import { addDays, calendarOnCall, fmtDT, fmtDur, HOUR, samplePoints, startOfDay, weekday, type Segment } from './engine'
+import { layerLanes, type Lane } from './lanes'
 import { useStore } from './store'
 import { fmtTz, tzName, zparts } from './tz'
 import { barRect, BarCard, blurClosesCard, KIND_META, personColor, REMOVED_STYLE, shortName, SUBST_STYLE, type BarAction, type BarInfo } from './ui'
 import type { Calendar, Shift } from './types'
 
 /** Что знает таймлайн о смене, по которой кликнули: для действий лида. */
-export interface BarTarget { personId: string; start: number; end: number; shift?: Shift; layerId?: string; removal?: Shift }
+export interface BarTarget { personId: string; start: number; end: number; shift?: Shift; layerId?: string; removal?: Shift; slotId?: string }
 
-const REM = '|снят'
-
-interface Lane { key: string; label: string; sub?: string; kind: string; segs: (Segment & { shiftId?: string; removed?: boolean })[]; final?: boolean; layerId?: string }
 
 export function Timeline({ c, from, days, now, actions, onFill }: { c: Calendar; from: number; days: number; now: number; actions?: (t: BarTarget) => BarAction[]; onFill?: (start: number, end: number) => void }) {
   const { state } = useStore()
@@ -25,29 +23,7 @@ export function Timeline({ c, from, days, now, actions, onFill }: { c: Calendar;
   const pts = useMemo(() => samplePoints(a, b, step, breaks), [a, b, step, breaks])
   const nextPt = (i: number) => (i + 1 < pts.length ? pts[i + 1] : Math.min(b, pts[i] + step))
   const lanes = useMemo<Lane[]>(() => {
-    const out: Lane[] = []
-    for (const l of c.layers) {
-      const k = Math.min(l.parallel, l.participants.length) || 1
-      for (let i = 0; i < k; i++) {
-        // снятые с дежурства остаются на своей дорожке, но серые и зачёркнутые
-        const segs = sampleSegments(a, b, (t) => {
-          const id = layerSlot(l, t, i, tz)
-          return id && removedAt(c, id, l.id, t) ? id + REM : id
-        }, step, breaks).map((sg) => {
-          if (!sg.personId.endsWith(REM)) return sg
-          const pid = sg.personId.slice(0, -REM.length)
-          return { ...sg, personId: pid, removed: true, shiftId: removedAt(c, pid, l.id, sg.start + 1)?.id }
-        })
-        out.push({ key: l.id + i, layerId: l.id, label: i === 0 ? l.name : '', sub: k > 1 ? `место ${i + 1} из ${k}` : undefined, kind: l.kind, segs })
-      }
-    }
-    const own = c.shifts.filter((x) => !x.removesPersonId)
-    if (own.length) {
-      out.push({
-        key: 'shifts', label: 'Разовые и подмены', kind: 'override',
-        segs: own.map((s) => ({ start: Math.max(a, +new Date(s.start)), end: Math.min(b, +new Date(s.end)), personId: s.personId, extra: s.note, hatch: !!s.replacesPersonId, shiftId: s.id })).filter((s) => s.end > s.start),
-      })
-    }
+    const out: Lane[] = layerLanes(c, a, b, step, breaks)
     // итоговые дорожки: человек остаётся на своей дорожке, пока дежурит (стабильная раскладка)
     const lanesP: (string | null)[] = []
     const finalSegs: Segment[][] = []
@@ -119,7 +95,7 @@ export function Timeline({ c, from, days, now, actions, onFill }: { c: Calendar;
           </div>
         </div>
         {lanes.map((ln) => (
-          <div key={ln.key} className={`flex border-b border-line ${ln.final ? 'bg-surface-2' : ''}`}>
+          <div key={ln.key} data-lane={ln.key} data-lane-label={ln.label} className={`flex border-b border-line ${ln.final ? 'bg-surface-2' : ''}`}>
             <div className="w-52 shrink-0 px-3 py-1.5 text-xs">
               {ln.label && (
                 <div className="flex items-center gap-1.5">
@@ -138,9 +114,11 @@ export function Timeline({ c, from, days, now, actions, onFill }: { c: Calendar;
                 const col = personColor(s.personId)
                 const label = p ? shortName(p.name) : ''
                 const layerName = ln.final ? 'Итог' : ln.key === 'shifts' ? (s.hatch ? 'Подмена' : 'Разовое') : c.layers.find((x) => ln.key.startsWith(x.id))?.name ?? ln.label
+                const replacedName = s.replaced ? byId(s.replaced)?.name : undefined
                 const removal = s.removed && s.shiftId ? c.shifts.find((x) => x.id === s.shiftId) : undefined
                 const lines = [
                   `${c.name} · ${s.removed ? `${layerName} · снят(а) с дежурства` : s.hatch && ln.key !== 'shifts' ? `${layerName}, подмена` : layerName}`,
+                  ...(replacedName ? [`Подмена: вместо ${replacedName}`] : []),
                   `${fmtDT(s.start, tz)} — ${fmtDT(s.end, tz)} · ${fmtDur(s.end - s.start)}`,
                   `Часовой пояс: ${tzName(tz)}`,
                   ...(s.extra ? [s.extra] : []),
@@ -151,7 +129,9 @@ export function Timeline({ c, from, days, now, actions, onFill }: { c: Calendar;
                 return (
                   <div key={i} data-bar role="button" tabIndex={0}
                     aria-label={p ? `${p.name}${s.removed ? ' (снят)' : ''}, ${lines.join(', ')}` : undefined}
+                    title={replacedName ? `${p?.name ?? ''} — подмена, вместо ${replacedName}` : undefined}
                     data-removed={s.removed ? 'true' : undefined}
+                    data-subst={s.replaced ? s.replaced : undefined}
                     onClick={(e) => open(e.currentTarget)}
                     onFocus={(e) => open(e.currentTarget)}
                     onBlur={(e) => { if (blurClosesCard(e.relatedTarget)) setInfo(null) }}
@@ -161,7 +141,7 @@ export function Timeline({ c, from, days, now, actions, onFill }: { c: Calendar;
                       ...(s.hatch ? SUBST_STYLE : {}),
                       ...(s.removed ? REMOVED_STYLE : {}),
                     }}>
-                    {width > 5 ? (s.removed ? `снят · ${label}` : label) : ''}
+                    {width > 5 ? (s.removed ? `снят · ${label}` : s.replaced && width > 9 ? `${label} · подмена` : label) : ''}
                   </div>
                 )
               })}
@@ -207,20 +187,21 @@ export function MonthGrid({ c, month, now }: { c: Calendar; month: number; now: 
       {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((d) => <div key={d} className="px-2 py-1 font-medium text-faint">{d}</div>)}
       {cells.map((d, i) => {
         const inMonth = zparts(d, tz).m === monthNo
-        const people = new Map<string, string>()
+        const people = new Map<string, { kind: string; replaced?: string }>()
         for (let h = 0; h < 24; h += 3) {
-          for (const e of calendarOnCall(c, d + h * HOUR + 1)) if (!people.has(e.personId)) people.set(e.personId, e.kind)
+          for (const e of calendarOnCall(c, d + h * HOUR + 1)) if (!people.has(e.personId)) people.set(e.personId, { kind: e.kind, replaced: e.replaced })
         }
         const isToday = today === d
         return (
           <div key={i} className={`min-h-24 border-t border-l border-line p-1 ${inMonth ? '' : 'text-faint'} ${isToday ? 'bg-accent-soft' : ''}`}>
             <div className="mb-1 font-semibold">{zparts(d, tz).d}</div>
             <div className="space-y-0.5">
-              {[...people].map(([id, kind]) => {
+              {[...people].map(([id, { kind, replaced }]) => {
                 const person = byId(id)
+                const instead = replaced ? byId(replaced)?.name : undefined
                 return (
-                  <div key={id} title={person ? `${person.name}${kind === 'override' ? ' · подмена' : kind === 'oneoff' ? ' · разовое' : ''}` : ''} className="truncate rounded px-1" style={{ background: personColor(id) + '22', borderLeft: `3px solid ${personColor(id)}`, ...(kind === 'override' ? { backgroundImage: SUBST_STYLE.backgroundImage, outline: '1px dashed ' + personColor(id), outlineOffset: '-1px' } : {}) }}>
-                    {person ? shortName(person.name) : ''}
+                  <div key={id} data-subst={kind === 'override' ? replaced ?? 'true' : undefined} title={person ? `${person.name}${kind === 'override' ? ` · подмена${instead ? `, вместо ${instead}` : ''}` : kind === 'oneoff' ? ' · разовое' : ''}` : ''} className="truncate rounded px-1" style={{ background: personColor(id) + '22', borderLeft: `3px solid ${personColor(id)}`, ...(kind === 'override' ? { backgroundImage: SUBST_STYLE.backgroundImage, outline: '1px dashed ' + personColor(id), outlineOffset: '-1px' } : {}) }}>
+                    {person ? shortName(person.name) : ''}{kind === 'override' && <span className="sr-only"> (подмена{instead ? `, вместо ${instead}` : ''})</span>}
                   </div>
                 )
               })}

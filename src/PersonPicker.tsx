@@ -92,7 +92,7 @@ export function PersonPicker({ people, value, onChange, teamFirst = [], teamLabe
         className={`${inputCls} pr-8`}
         placeholder={placeholder ?? (addMode ? 'Добавить: имя, telegram, подразделение' : selected ? selected.name : allowEmpty ? emptyLabel : 'Имя, telegram, подразделение')}
         value={display}
-        onFocus={() => { setOpen(true); setActive(0) }}
+        onFocus={(e) => { if (e.currentTarget.dataset.quietFocus) { delete e.currentTarget.dataset.quietFocus; return } setOpen(true); setActive(0) }}
         onClick={() => setOpen(true)}
         onBlur={() => { setOpen(false); setQ('') }}
         onChange={(e) => { setQ(e.target.value); setActive(0); setOpen(true) }}

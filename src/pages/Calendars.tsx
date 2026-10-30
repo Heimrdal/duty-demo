@@ -1,14 +1,16 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { onCallAt } from '../cache'
 import { CalendarFilters, Pager, StarButton } from '../CalendarList'
 import { uid } from '../engine'
+import { defaultEscalation } from '../data'
+import { calendarFormErrors } from '../validation'
 import { useFavorites } from '../favorites'
 import { calendarOrgUnit, EMPTY_FILTER, filterCalendars, type CalFilter } from '../search'
 import { peopleById, useNow, useStore } from '../store'
 import { DEFAULT_TZ, TZ_OPTIONS } from '../tz'
 import { PersonPicker } from '../PersonPicker'
-import { Avatar, Btn, Card, Empty, Field, inputCls, Modal, TYPE_META } from '../ui'
-import type { Calendar, CalendarType } from '../types'
+import { Avatar, Btn, Card, Empty, Field, focusFirstInvalid, FormErrors, inputCls, Modal } from '../ui'
+import type { Calendar } from '../types'
 
 const PAGE = 24
 
@@ -34,7 +36,7 @@ export function Calendars({ initialQuery = '' }: { initialQuery?: string }) {
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">Календари</h1>
-          <p className="mt-1 text-sm text-muted">Один календарь — один продукт. Команды и их таймлайн — в разделе «Команды».</p>
+          <p className="mt-1 text-sm text-muted">Один календарь — один продукт. Кто когда дежурит по команде — в разделе «Дежурства команд». Поиск ищет и по названию команды.</p>
         </div>
         <Btn onClick={() => setCreate(true)}>Новый календарь</Btn>
       </header>
@@ -47,7 +49,6 @@ export function Calendars({ initialQuery = '' }: { initialQuery?: string }) {
               <a key={c.id} href={`#/calendars/${c.id}`} className="block" data-testid="calendar-card">
                 <Card className="h-full p-5 hover:border-line-strong">
                   <div className="flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full" style={{ background: TYPE_META[c.type].color }} />
                     <h3 className="flex-1 font-medium">{c.name}</h3>
                     <StarButton on={isFav(c.id)} name={c.name} onToggle={() => toggle(c.id)} className="-my-1 -mr-2" />
                   </div>
@@ -74,7 +75,6 @@ function CreateCalendar({ onClose }: { onClose: () => void }) {
   const teams = [...new Set([...state.people.flatMap((p) => p.teams), ...state.calendars.map((c) => c.team)])].sort((a, b) => a.localeCompare(b, 'ru'))
   const [name, setName] = useState('')
   const [product, setProduct] = useState('')
-  const [type, setType] = useState<CalendarType>('product')
   const [teamChoice, setTeamChoice] = useState('')
   const [newTeam, setNewTeam] = useState('')
   const [join, setJoin] = useState(false)
@@ -87,15 +87,20 @@ function CreateCalendar({ onClose }: { onClose: () => void }) {
   // Членство в команде дежурств — отдельно от оргструктуры (orgUnit). По умолчанию не добавляем.
   const willJoin = !!teamName && !alreadyMember && join
   const teamPeople = creating ? [] : state.people.filter((p) => p.teams.includes(teamName)).map((p) => p.id)
-  const ready = name.trim().length > 0 && teamName.length > 0 && leadId.length > 0
+  // ошибки показываем после первой попытки создать; кнопка не блокируется молча
+  const [tried, setTried] = useState(false)
+  const formRef = useRef<HTMLFormElement>(null)
+  const errors = calendarFormErrors({ name, teamChoice, newTeam, leadId })
+  const err = (k: keyof typeof errors) => (tried ? errors[k]?.message : undefined)
   const submit = () => {
-    if (!ready) return
+    const missing = Object.keys(errors)
+    if (missing.length) { setTried(true); focusFirstInvalid(formRef.current); return }
     const id = 'cal-' + uid()
     const c: Calendar = {
-      id, name: name.trim(), product: product.trim() || name.trim(), description: '', type, team: teamName, ownerId: me.id, leadId, timezone, layerMode: mode, repeat: 1,
+      id, name: name.trim(), product: product.trim() || name.trim(), description: '', team: teamName, ownerId: me.id, leadId, timezone, layerMode: mode, repeat: 1,
       layers: [],
       shifts: [],
-      escalation: [{ id: uid(), target: 'oncall', delayMin: 0 }, { id: uid(), target: 'next', delayMin: 5 }, { id: uid(), target: 'lead', delayMin: 10 }, { id: uid(), target: 'manager', delayMin: 15 }],
+      escalation: defaultEscalation(),
     }
     update((s) => ({
       ...s,
@@ -109,16 +114,16 @@ function CreateCalendar({ onClose }: { onClose: () => void }) {
   }
   return (
     <Modal title="Новый календарь" onClose={onClose}>
-      <div className="space-y-5">
-        <Field label="Название" hint="Так календарь виден на дашборде и в уведомлениях"><input autoFocus className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="Например: Кредитный конвейер" /></Field>
-        <Field label="Команда" hint="Существующая или новая. Календарь больше не прикрепляется молча.">
+      <form ref={formRef} noValidate className="space-y-5" onSubmit={(e) => { e.preventDefault(); submit() }}>
+        <Field label="Название" hint="Так календарь виден на дашборде и в уведомлениях" error={err('name')}><input autoFocus data-testid="cal-name" className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="Например: Кредитный конвейер" /></Field>
+        <Field label="Команда" hint="Существующая или новая. Календарь больше не прикрепляется молча." error={err('team')}>
           <select data-testid="team-select" className={inputCls} value={teamChoice} onChange={(e) => { setTeamChoice(e.target.value); setLeadId('') }}>
             <option value="">Выберите</option>
             {teams.map((t) => <option key={t} value={t}>{t}</option>)}
             <option value="__new">Новая команда…</option>
           </select>
-          {creating && <input aria-label="Название новой команды" className={`${inputCls} mt-2`} value={newTeam} onChange={(e) => setNewTeam(e.target.value)} placeholder="Название новой команды" />}
         </Field>
+        {creating && <Field label="Название новой команды" error={err('newTeam')}><input data-testid="new-team" className={inputCls} value={newTeam} onChange={(e) => setNewTeam(e.target.value)} placeholder="Например: Кредитный конвейер" /></Field>}
         <div data-testid="chosen-team" className="rounded-lg bg-surface-2 px-3 py-2 text-sm">
           {teamName
             ? <>Календарь будет в команде <span className="font-medium text-ink">«{teamName}»</span>{willJoin ? '. Вы станете участником команды дежурств; ваше подразделение не изменится.' : alreadyMember ? '. Вы уже участник этой команды.' : '.'}</>
@@ -128,14 +133,7 @@ function CreateCalendar({ onClose }: { onClose: () => void }) {
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" data-testid="join-team" checked={join} onChange={(e) => setJoin(e.target.checked)} /> Добавить меня в эту команду</label>
         )}
         <Field label="Продукт"><input className={inputCls} value={product} onChange={(e) => setProduct(e.target.value)} placeholder="Сервисы скоринга и выдачи кредитов" /></Field>
-        <Field label="Тип">
-          <div className="grid grid-cols-2 gap-2">
-            {(Object.keys(TYPE_META) as CalendarType[]).map((t) => (
-              <button key={t} type="button" aria-pressed={type === t} onClick={() => setType(t)} className={`rounded-lg border px-3 py-2 text-left text-sm ${type === t ? 'border-accent bg-accent-soft' : 'border-line'}`}>{TYPE_META[t].label}</button>
-            ))}
-          </div>
-        </Field>
-        <Field label="Лид группы" hint="Обязательное поле. Сверху — люди выбранной команды.">
+        <Field label="Лид группы" hint="Обязательное поле. Сверху — люди выбранной команды." error={err('lead')}>
           <PersonPicker testId="lead-select" people={state.people} teamFirst={willJoin ? [...new Set([me.id, ...teamPeople])] : teamPeople} teamLabel="Выбранная команда" value={leadId} onChange={setLeadId} />
         </Field>
         <Field label="Слои" hint="Параллельно — дежурят все слои. По приоритету верхний перекрывает нижние.">
@@ -144,8 +142,9 @@ function CreateCalendar({ onClose }: { onClose: () => void }) {
         <Field label="Часовой пояс" hint="В нём считаются передачи смен и дни недели">
           <select className={inputCls} value={timezone} onChange={(e) => setTimezone(e.target.value)}>{TZ_OPTIONS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select>
         </Field>
-        <div className="flex justify-end gap-2 pt-2"><Btn variant="ghost" onClick={onClose}>Отмена</Btn><Btn disabled={!ready} onClick={submit}>Создать</Btn></div>
-      </div>
+        {tried && <FormErrors missing={Object.values(errors).map((e) => e!.label)} />}
+        <div className="flex justify-end gap-2 pt-2"><Btn variant="ghost" type="button" onClick={onClose}>Отмена</Btn><Btn type="submit" data-testid="create-calendar">Создать</Btn></div>
+      </form>
     </Modal>
   )
 }

@@ -68,11 +68,11 @@ describe('снять с дежурства', () => {
     const c2 = withShifts(c, [makeRemoval({ personId: pid, start: T - HOUR, end: T + HOUR })])
     const chain = resolveChain(c2, PEOPLE, T, replaceCal(cals, c2))
     expect(chain[0].people.map((p) => p.id)).not.toContain(pid)
-    // СЦ: снятый сменный инженер не попадает и в уровень «Дежурный ситуационного центра»
+    // СЦ: снятый сменный инженер не попадает и в уровень «Дежурный другого календаря» (СЦ)
     const sc = cals.find((x) => x.id === 'cal-sc')!
     const sc2 = withShifts(sc, [makeRemoval({ personId: 'u-sc2', start: T - HOUR, end: T + HOUR })])
     const ib = resolveChain(cals.find((x) => x.id === 'cal-ib')!, PEOPLE, T, replaceCal(cals, sc2))
-    expect(ib.find((l) => l.target === 'sitcenter')!.people.map((p) => p.id)).not.toContain('u-sc2')
+    expect(ib.find((l) => l.target === 'calendar')!.people.map((p) => p.id)).not.toContain('u-sc2')
   })
 
   test('отмена снятия («Вернуть») возвращает человека, и это не создаёт дыру', () => {

@@ -124,11 +124,13 @@ describe('фильтры календарей', () => {
     const f = filterCalendars(s.calendars, { ...EMPTY_FILTER, coverage: 'now' }, NOW, orgOf)
     expect(f.map((c) => c.id).sort()).toEqual(onCallIndex(s.calendars, NOW).gapsNow.map((c) => c.id).sort())
   })
-  test('подразделение и тип сужают выдачу', () => {
+  test('подразделение сужает выдачу; типа календаря больше нет', () => {
     const org = s.calendars[100].orgUnit!
-    const f = filterCalendars(s.calendars, { ...EMPTY_FILTER, org, type: s.calendars[100].type }, NOW, orgOf)
+    const f = filterCalendars(s.calendars, { ...EMPTY_FILTER, org }, NOW, orgOf)
     expect(f.length).toBeGreaterThan(0)
-    expect(f.every((c) => c.orgUnit === org && c.type === s.calendars[100].type)).toBe(true)
+    expect(f.every((c) => c.orgUnit === org)).toBe(true)
+    expect(Object.keys(EMPTY_FILTER).sort()).toEqual(['coverage', 'org', 'q'])
+    expect(s.calendars.some((c) => 'type' in c)).toBe(false)
   })
 })
 

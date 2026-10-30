@@ -1,8 +1,9 @@
 /**
  * Большой демо-набор: ~300 команд и календарей, ~1500 сотрудников, 25 подразделений.
  * Генерация детерминированная: одинаковые seed и «сейчас» дают одинаковые данные.
- * Маленький набор (5 команд) входит в большой целиком, поэтому вход под теми же людьми работает в обоих.
+ * Маленький набор (6 команд) входит в большой целиком, поэтому вход под теми же людьми работает в обоих.
  */
+import { demoManualLayer, demoManualSlots } from './manualDemo'
 import { addDays, isoDate, startOfDay } from './engine'
 import type { Calendar, EscStep, Layer, Person, Restriction } from './types'
 
@@ -48,7 +49,9 @@ export const ORG_UNITS: { name: string; tz?: string }[] = [
   { name: 'Дальневосточный ИТ-центр', tz: 'Asia/Vladivostok' },
 ]
 
-type Sys = [name: string, product: string, type: Calendar['type'], org: number]
+/** Вид системы — только для генерации названий должностей; в календарь не попадает. */
+type SysType = 'sitcenter' | 'monitoring' | 'product' | 'infra'
+type Sys = [name: string, product: string, type: SysType, org: number]
 /** Банковские системы: [короткое имя, продукт, тип, индекс подразделения] */
 const SYSTEMS: Sys[] = [
   ['АБС ЦФТ', 'Автоматизированная банковская система ЦФТ-Банк', 'product', 20],
@@ -118,7 +121,7 @@ const SYSTEMS: Sys[] = [
   ['Дальневосточные отделения', 'ИТ-поддержка отделений ДФО', 'infra', 24],
 ]
 const ROLES = ['', ' — разработка', ' — сопровождение', ' — интеграции', ' — SRE', ' — L2', ' — релизы', ' — тестовые стенды', ' — DBA']
-const TITLES: Record<Calendar['type'], string[]> = {
+const TITLES: Record<SysType, string[]> = {
   product: ['Backend-разработчик', 'Java-разработчик', 'Frontend-разработчик', 'Инженер сопровождения', 'SRE', 'Аналитик', 'QA-инженер', 'Разработчик интеграций'],
   infra: ['Системный администратор', 'Сетевой инженер', 'DBA', 'Инженер платформы', 'DevOps-инженер', 'Инженер СХД'],
   monitoring: ['Инженер мониторинга', 'Аналитик SOC', 'Инженер NOC'],
@@ -186,8 +189,9 @@ export function makeLargePart(existing: Person[], now: number, seed = LARGE_SEED
   const calendars: Calendar[] = []
   const all: Restriction = { type: 'none', from: '00:00', to: '00:00', days: [] }
   const esc = (id: string): EscStep[] => [
-    { id: `${id}-e1`, target: 'oncall', delayMin: 0 }, { id: `${id}-e2`, target: 'next', delayMin: 5 },
-    { id: `${id}-e3`, target: 'lead', delayMin: 10 }, { id: `${id}-e4`, target: 'manager', delayMin: 15 },
+    { id: `${id}-e1`, targets: [{ target: 'oncall' }], delayMin: 0 }, { id: `${id}-e2`, targets: [{ target: 'next' }], delayMin: 5 },
+    { id: `${id}-e3`, targets: [{ target: 'lead' }], delayMin: 10 }, { id: `${id}-e4`, targets: [{ target: 'manager' }], delayMin: 15 },
+    { id: `${id}-e5`, targets: [{ target: 'calendar', calendarId: 'cal-sc' }], delayMin: 20 },
   ]
   const shared: Person[] = [] // инженеры, которые дежурят в нескольких командах
 
@@ -224,14 +228,19 @@ export function makeLargePart(existing: Person[], now: number, seed = LARGE_SEED
       L('backup', 'Резерв — лид', 'secondary', 'week', 4, [lead.id]),
     ]
     else if (roll < 0.8) layers = [
-      L('day', 'Рабочие часы', 'business', 'week', 1, engineers, { type: 'weekly', from: '09:00', to: '18:00', days: [0, 1, 2, 3, 4] }, 1, '09:00'),
-      L('night', 'Ночь', 'night', 'week', 1, [...engineers].reverse(), { type: 'daily', from: '18:00', to: '09:00', days: [] }, 1, '18:00'),
+      L('day', 'Рабочие часы', 'primary', 'week', 1, engineers, { type: 'weekly', from: '09:00', to: '18:00', days: [0, 1, 2, 3, 4] }, 1, '09:00'),
+      L('night', 'Ночь', 'primary', 'week', 1, [...engineers].reverse(), { type: 'daily', from: '18:00', to: '09:00', days: [] }, 1, '18:00'),
       // у части команд выходные днём не закрыты — это и есть «дыры за 7 дней»
-      ...(r() < 0.7 ? [L('weekend', 'Выходные днём', 'secondary', 'week', 1, engineers, { type: 'weekly', from: '09:00', to: '18:00', days: [5, 6] }, 1, '09:00')] : []),
+      ...(r() < 0.7 ? [L('weekend', 'Выходные днём', 'primary', 'week', 1, engineers, { type: 'weekly', from: '09:00', to: '18:00', days: [5, 6] }, 1, '09:00')] : []),
     ]
-    else if (roll < 0.9) layers = [L('main', 'Только рабочие часы', 'business', 'day', 1, engineers, { type: 'weekly', from: '09:00', to: '18:00', days: [0, 1, 2, 3, 4] }, 1, '09:00')]
+    else if (roll < 0.9) layers = [L('main', 'Только рабочие часы', 'primary', 'day', 1, engineers, { type: 'weekly', from: '09:00', to: '18:00', days: [0, 1, 2, 3, 4] }, 1, '09:00')]
     else layers = [L('main', 'Пара дежурных, по неделе', 'primary', 'week', 1, engineers, all, 2)]
 
+    // часть команд ведёт ручной график без ротации
+    if (layers.length && i % 37 === 11) {
+      layers = [demoManualLayer({ id: `${id}-manual`, name: 'Ручной график', kind: 'primary', startsAt: start, handoffTime: '08:00', rotation: { unit: 'day', count: 1 }, parallel: 1, restriction: all },
+        demoManualSlots(now, tz, engineers, [...engineers].reverse(), 21))]
+    }
     const shifts: Calendar['shifts'] = []
     if (layers.length && r() < 0.15) {
       const l = layers[0]
@@ -242,7 +251,7 @@ export function makeLargePart(existing: Person[], now: number, seed = LARGE_SEED
     }
 
     calendars.push({
-      id, name: t.name, product, type, team: t.name, orgUnit: unit.name,
+      id, name: t.name, product, team: t.name, orgUnit: unit.name,
       description: `Дежурство «${t.name}»: ${product.toLowerCase()}.`,
       ownerId: r() < 0.2 ? headId(org) : lead.id, leadId: lead.id, timezone: tz,
       layerMode: layers.length === 2 && layers[1].kind === 'secondary' ? 'priority' : 'parallel', repeat: 1,

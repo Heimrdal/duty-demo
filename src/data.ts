@@ -1,6 +1,7 @@
+import { demoManualLayer, demoManualSlots } from './manualDemo'
 import { addDays, isoDate, startOfDay, uid } from './engine'
 import { makeLargePart } from './bigdata'
-import type { Calendar, Dataset, NotifySettings, Person, State, TgMessage } from './types'
+import type { Calendar, Dataset, EscRule, EscStep, LayerKind, NotifySettings, Person, State, TgMessage } from './types'
 
 const P = (id: string, name: string, title: string, orgUnit: string, managerId: string | undefined, tg: string, phone: string): Person => ({
   id, name, title, orgUnit, teams: [orgUnit], managerId, telegram: '@' + tg, phone, email: `${tg.replace(/_/g, '.')}@bank.example`,
@@ -29,13 +30,17 @@ export const PEOPLE: Person[] = [
 
 const TZ = 'Europe/Moscow'
 const all = { type: 'none' as const, from: '00:00', to: '00:00', days: [] as number[] }
-const defaultEsc = () => [
-  { id: uid(), target: 'oncall' as const, delayMin: 0 },
-  { id: uid(), target: 'next' as const, delayMin: 5 },
-  { id: uid(), target: 'lead' as const, delayMin: 10 },
-  { id: uid(), target: 'manager' as const, delayMin: 15 },
-  { id: uid(), target: 'sitcenter' as const, delayMin: 20 },
+/** Уровень эскалации: задержка после предыдущего и одна или несколько целей. */
+export const escStep = (delayMin: number, ...targets: EscRule[]): EscStep => ({ id: uid(), delayMin, targets })
+/** Правила по умолчанию: дежурные → следующий → лид → руководитель (+ дежурный другого календаря, если задан). */
+export const defaultEscalation = (otherCalendarId?: string): EscStep[] => [
+  escStep(0, { target: 'oncall' }),
+  escStep(5, { target: 'next' }),
+  escStep(10, { target: 'lead' }),
+  escStep(15, { target: 'manager' }),
+  ...(otherCalendarId ? [escStep(20, { target: 'calendar' as const, calendarId: otherCalendarId })] : []),
 ]
+const defaultEsc = () => defaultEscalation('cal-sc')
 
 /** Демо-календари. Даты считаются в зоне календаря (МСК), поэтому не зависят от часового пояса браузера. */
 export function makeCalendars(now: number = Date.now()): Calendar[] {
@@ -43,30 +48,27 @@ export function makeCalendars(now: number = Date.now()): Calendar[] {
   const anchor = (daysAgo: number) => isoDate(addDays(today, -(daysAgo + 56), TZ), TZ) // ротации начались ~2 месяца назад
   return [
     {
-      id: 'cal-sc', name: 'Ситуационный центр', product: 'Ситуационный центр банка', type: 'sitcenter', team: 'Ситуационный центр',
+      id: 'cal-sc', name: 'Ситуационный центр', product: 'Ситуационный центр банка', team: 'Ситуационный центр',
       description: 'Круглосуточная дежурная смена СЦ: первичная реакция на инциденты, координация, оповещение бизнеса.',
       ownerId: 'u-sc-mgr', leadId: 'u-sc3', timezone: 'Europe/Moscow', layerMode: 'parallel', repeat: 2,
       layers: [
         { id: 'l-sc-main', name: 'Сменный инженер 24×7', kind: 'primary', startsAt: anchor(9), handoffTime: '09:00', rotation: { unit: 'day', count: 1 }, participants: ['u-sc1', 'u-sc2', 'u-sc3'], parallel: 1, restriction: all },
-        { id: 'l-sc-shadow', name: 'Старший смены (рабочие часы)', kind: 'business', startsAt: anchor(14), handoffTime: '09:00', rotation: { unit: 'week', count: 1 }, participants: ['u-sc3', 'u-sc-mgr'], parallel: 1, restriction: { type: 'weekly', from: '09:00', to: '18:00', days: [0, 1, 2, 3, 4] } },
+        { id: 'l-sc-shadow', name: 'Старший смены (рабочие часы)', kind: 'primary', startsAt: anchor(14), handoffTime: '09:00', rotation: { unit: 'week', count: 1 }, participants: ['u-sc3', 'u-sc-mgr'], parallel: 1, restriction: { type: 'weekly', from: '09:00', to: '18:00', days: [0, 1, 2, 3, 4] } },
       ],
-      shifts: [], escalation: [
-        { id: uid(), target: 'oncall', delayMin: 0 }, { id: uid(), target: 'next', delayMin: 5 },
-        { id: uid(), target: 'lead', delayMin: 10 }, { id: uid(), target: 'manager', delayMin: 15 },
-      ],
+      shifts: [], escalation: defaultEscalation(),
     },
     {
-      id: 'cal-mon', name: 'Мониторинг Zabbix', product: 'Zabbix / Grafana / алертинг', type: 'monitoring', team: 'Мониторинг',
+      id: 'cal-mon', name: 'Мониторинг Zabbix', product: 'Zabbix / Grafana / алертинг', team: 'Мониторинг',
       description: 'Дежурная служба мониторинга: доступность Zabbix, разбор шумных триггеров, эскалация в продуктовые команды.',
       ownerId: 'u-mon-lead', leadId: 'u-mon-lead', timezone: 'Europe/Moscow', layerMode: 'parallel', repeat: 1,
       layers: [
-        { id: 'l-mon-day', name: 'Дневная смена', kind: 'business', startsAt: anchor(6), handoffTime: '09:00', rotation: { unit: 'day', count: 1 }, participants: ['u-mon1', 'u-mon2'], parallel: 1, restriction: { type: 'daily', from: '09:00', to: '21:00', days: [] } },
-        { id: 'l-mon-night', name: 'Ночная смена', kind: 'night', startsAt: anchor(6), handoffTime: '21:00', rotation: { unit: 'week', count: 1 }, participants: ['u-mon2', 'u-mon1', 'u-mon-lead'], parallel: 1, restriction: { type: 'daily', from: '21:00', to: '09:00', days: [] } },
+        { id: 'l-mon-day', name: 'Дневная смена', kind: 'primary', startsAt: anchor(6), handoffTime: '09:00', rotation: { unit: 'day', count: 1 }, participants: ['u-mon1', 'u-mon2'], parallel: 1, restriction: { type: 'daily', from: '09:00', to: '21:00', days: [] } },
+        { id: 'l-mon-night', name: 'Ночная смена', kind: 'primary', startsAt: anchor(6), handoffTime: '21:00', rotation: { unit: 'week', count: 1 }, participants: ['u-mon2', 'u-mon1', 'u-mon-lead'], parallel: 1, restriction: { type: 'daily', from: '21:00', to: '09:00', days: [] } },
       ],
       shifts: [], escalation: defaultEsc(),
     },
     {
-      id: 'cal-ib', name: 'Интернет-банк', product: 'Интернет-банк для физлиц (ДБО)', type: 'product', team: 'Интернет-банк',
+      id: 'cal-ib', name: 'Интернет-банк', product: 'Интернет-банк для физлиц (ДБО)', team: 'Интернет-банк',
       description: 'Продуктовое дежурство разработки: ночные релизы, деградации API, ошибки входа клиентов.',
       ownerId: 'u-ib-lead', leadId: 'u-ib-lead', timezone: 'Europe/Moscow', layerMode: 'parallel', repeat: 1,
       layers: [
@@ -76,7 +78,7 @@ export function makeCalendars(now: number = Date.now()): Calendar[] {
       shifts: [], escalation: defaultEsc(),
     },
     {
-      id: 'cal-pay', name: 'Платёжный шлюз', product: 'Процессинг карточных платежей', type: 'product', team: 'Платёжный шлюз',
+      id: 'cal-pay', name: 'Платёжный шлюз', product: 'Процессинг карточных платежей', team: 'Платёжный шлюз',
       description: 'Разработка дежурит длинными сменами по 2 недели: процессинг, 3-D Secure, интеграции с МПС.',
       ownerId: 'u-pay-lead', leadId: 'u-pay-lead', timezone: 'Europe/Moscow', layerMode: 'priority', repeat: 2,
       layers: [
@@ -86,17 +88,28 @@ export function makeCalendars(now: number = Date.now()): Calendar[] {
       shifts: [], escalation: defaultEsc(),
     },
     {
-      id: 'cal-sbp', name: 'СБП', product: 'Система быстрых платежей', type: 'product', team: 'СБП',
+      id: 'cal-sbp', name: 'СБП', product: 'Система быстрых платежей', team: 'СБП',
       description: 'Дежурство по интеграции с НСПК: переводы по номеру телефона, QR-оплаты.',
       ownerId: 'u-sbp1', leadId: 'u-pay-lead', timezone: 'Europe/Moscow', layerMode: 'parallel', repeat: 1,
       layers: [
         { id: 'l-sbp-week', name: 'Недельная ротация', kind: 'primary', startsAt: anchor(2), handoffTime: '10:00', rotation: { unit: 'week', count: 1 }, participants: ['u-sbp1', 'u-sbp2'], parallel: 1, restriction: all },
-        { id: 'l-sbp-weekend', name: 'Выходные — усиление', kind: 'night', startsAt: anchor(2), handoffTime: '10:00', rotation: { unit: 'week', count: 1 }, participants: ['u-pay2', 'u-ib1'], parallel: 1, restriction: { type: 'weekly', from: '00:00', to: '00:00', days: [5, 6] } },
+        { id: 'l-sbp-weekend', name: 'Выходные — усиление', kind: 'primary', startsAt: anchor(2), handoffTime: '10:00', rotation: { unit: 'week', count: 1 }, participants: ['u-pay2', 'u-ib1'], parallel: 1, restriction: { type: 'weekly', from: '00:00', to: '00:00', days: [5, 6] } },
       ],
       shifts: [
         { id: uid(), personId: 'u-pay1', start: new Date(addDays(today, 2, TZ)).toISOString(), end: new Date(addDays(today, 3, TZ)).toISOString(), replacesPersonId: 'u-sbp2', note: 'Подмена: Олег в отпуске', createdAt: new Date(now).toISOString() },
       ],
       escalation: defaultEsc(),
+    },
+    {
+      id: 'cal-l2', name: 'Вторая линия поддержки', product: 'Обращения клиентов ДБО', team: 'Вторая линия',
+      description: 'Ручной график: смены 08:00–20:00 и 20:00–08:00 расставляет лид, без автоматической ротации.',
+      ownerId: 'u-sc3', leadId: 'u-sc-mgr', timezone: 'Europe/Moscow', layerMode: 'parallel', repeat: 1,
+      layers: [
+        // прошлая и текущая недели заполнены; следующая — только пн–ср, а ночь со вторника на среду пустая (дыра)
+        demoManualLayer({ id: 'l-l2-manual', name: 'Смены по 12 часов', kind: 'primary', startsAt: isoDate(today, TZ), handoffTime: '08:00', rotation: { unit: 'day', count: 1 }, parallel: 1, restriction: all },
+          demoManualSlots(now, TZ, ['u-sc1', 'u-mon2', 'u-sc2'], ['u-sc2', 'u-sc3', 'u-mon1'], 21, (d, night) => d === 15 && night)),
+      ],
+      shifts: [], escalation: defaultEsc(),
     },
   ]
 }
@@ -117,7 +130,7 @@ export function makeMessages(now: number = Date.now()): TgMessage[] {
   ]
 }
 
-export const STATE_VERSION = 4
+export const STATE_VERSION = 5
 
 export function initialState(now: number = Date.now(), dataset: Dataset = 'small'): State {
   const people = PEOPLE.map((p) => ({ ...p, teams: [...p.teams] }))
@@ -131,12 +144,46 @@ export function initialState(now: number = Date.now(), dataset: Dataset = 'small
 }
 
 type LegacyPerson = Omit<Person, 'orgUnit' | 'teams'> & { team?: string; orgUnit?: string; teams?: string[] }
+type LegacyStep = { id?: string; delayMin?: number; target?: string; personId?: string; calendarId?: string; targets?: EscRule[] }
+type LegacyCalendar = Omit<Calendar, 'escalation'> & { type?: string; escalation?: LegacyStep[] }
 
-/** Миграция сохранённого состояния: v3 → v4 (явная зона календаря, оргструктура отдельно от дежурных команд, уровень 1 — дежурные). */
+const TARGETS = new Set(['oncall', 'next', 'lead', 'manager', 'person', 'calendar'])
+
+/** Тип дежурства: Основной / Резерв. Старые «рабочие часы», «ночь», «наблюдатель» — Основной. */
+export function migrateKind(k: string | undefined): LayerKind {
+  return k === 'secondary' ? 'secondary' : 'primary'
+}
+
+/**
+ * Правила эскалации v4 → v5: одна цель на уровень → список целей; «Дежурный ситуационного центра»
+ * превращается в «Дежурный другого календаря» (календарь СЦ) или убирается, если это тот же календарь.
+ * Уровень 1 всегда начинается с текущих дежурных.
+ */
+export function migrateEscalation(steps: LegacyStep[] | undefined, calendarId: string, scId: string | undefined): EscStep[] {
+  const out: EscStep[] = []
+  for (const st of Array.isArray(steps) ? steps : []) {
+    const raw: EscRule[] = Array.isArray(st.targets) ? st.targets : st.target ? [{ target: st.target as EscRule['target'], personId: st.personId, calendarId: st.calendarId }] : []
+    const targets: EscRule[] = []
+    for (const r of raw) {
+      if ((r.target as string) === 'sitcenter') {
+        if (scId && scId !== calendarId) targets.push({ target: 'calendar', calendarId: scId })
+      } else if (TARGETS.has(r.target)) {
+        if (r.target === 'calendar' && (!r.calendarId || r.calendarId === calendarId)) continue
+        targets.push({ target: r.target, ...(r.personId ? { personId: r.personId } : {}), ...(r.calendarId ? { calendarId: r.calendarId } : {}) })
+      }
+    }
+    if (targets.length) out.push({ id: st.id || uid(), delayMin: Math.max(0, Number(st.delayMin) || 0), targets })
+  }
+  if (!out.length || !out[0].targets.some((r) => r.target === 'oncall')) out.unshift({ id: uid(), delayMin: 0, targets: [{ target: 'oncall' }] })
+  out[0] = { ...out[0], delayMin: 0, targets: [{ target: 'oncall' }, ...out[0].targets.filter((r) => r.target !== 'oncall')] }
+  return out
+}
+
+/** Миграция сохранённого состояния: v3/v4 → v5 (зона календаря, оргструктура, снятия, гибкая эскалация, без типа календаря). */
 export function migrateState(raw: unknown): State | null {
   if (!raw || typeof raw !== 'object') return null
   const s = raw as State & { version: number }
-  if (s.version !== 3 && s.version !== STATE_VERSION) return null
+  if (s.version !== 3 && s.version !== 4 && s.version !== STATE_VERSION) return null
   const people = (s.people as unknown as LegacyPerson[]).map(({ team, ...p }) => {
     const orgUnit = p.orgUnit ?? team ?? ''
     const teams = Array.isArray(p.teams) ? p.teams : orgUnit ? [orgUnit] : []
@@ -146,15 +193,16 @@ export function migrateState(raw: unknown): State | null {
     const fixedTeams = [...new Set([...(s.version === 3 && seed ? [seed.orgUnit] : []), ...teams])]
     return { ...p, orgUnit: fixedOrg, teams: fixedTeams } as Person
   })
-  const calendars = s.calendars.map((c) => {
-    const escalation = c.escalation.length && c.escalation[0].target === 'oncall'
-      ? c.escalation
-      : [{ id: uid(), target: 'oncall' as const, delayMin: 0 }, ...c.escalation]
+  const legacy = s.calendars as unknown as LegacyCalendar[]
+  const scId = (legacy.find((c) => c.id === 'cal-sc') ?? legacy.find((c) => c.type === 'sitcenter'))?.id
+  const calendars: Calendar[] = legacy.map(({ type: _type, ...c }) => {
+    void _type
     // смены: старые записи без поля shifts/без personId приводим к валидному виду; снятия (removesPersonId) сохраняем
     const shifts = (Array.isArray(c.shifts) ? c.shifts : [])
       .filter((x) => x && x.start && x.end && (x.personId || x.removesPersonId))
       .map((x) => (x.removesPersonId ? { ...x, personId: '' } : x))
-    return { ...c, timezone: c.timezone || 'Europe/Moscow', shifts, escalation: escalation.map((x, i) => (i === 0 ? { ...x, delayMin: 0 } : x)) }
+    const layers = (Array.isArray(c.layers) ? c.layers : []).map((l) => ({ ...l, kind: migrateKind(l.kind) }))
+    return { ...c, timezone: c.timezone || 'Europe/Moscow', layers, shifts, escalation: migrateEscalation(c.escalation, c.id, scId) }
   })
   return { ...s, version: STATE_VERSION, dataset: s.dataset ?? 'small', people, calendars }
 }

@@ -1,5 +1,5 @@
-export type CalendarType = 'sitcenter' | 'monitoring' | 'product' | 'infra'
-export type LayerKind = 'primary' | 'secondary' | 'business' | 'night' | 'shadow'
+/** Тип дежурства слоя: только «Основной» и «Резерв». */
+export type LayerKind = 'primary' | 'secondary'
 export type RotationUnit = 'day' | 'week'
 export type RestrictionType = 'none' | 'daily' | 'weekly'
 
@@ -34,6 +34,20 @@ export interface Layer {
   participants: string[]
   parallel: number // сколько человек дежурят одновременно в этом слое
   restriction: Restriction
+  /** 'manual' — «Ручной график»: без ротации, дежурства расставляют по часам (slots). По умолчанию — ротация. */
+  mode?: LayerMode
+  slots?: ManualSlot[]
+}
+
+export type LayerMode = 'rotation' | 'manual'
+
+/** Дежурство в слое с ручным графиком: кто и с какого по какое время (ISO). */
+export interface ManualSlot {
+  id: string
+  personId: string
+  start: string
+  end: string
+  note?: string
 }
 
 export interface Shift {
@@ -50,11 +64,18 @@ export interface Shift {
   createdAt: string
 }
 
-export type EscTarget = 'oncall' | 'next' | 'lead' | 'manager' | 'person' | 'sitcenter'
-export interface EscStep {
-  id: string
+/** Кого звать на уровне эскалации. calendar — текущие дежурные другого календаря. */
+export type EscTarget = 'oncall' | 'next' | 'lead' | 'manager' | 'person' | 'calendar'
+export interface EscRule {
   target: EscTarget
   personId?: string
+  calendarId?: string
+}
+export interface EscStep {
+  id: string
+  /** на уровне можно звать несколько целей сразу */
+  targets: EscRule[]
+  /** минут после предыдущего уровня (у первого — 0) */
   delayMin: number
 }
 
@@ -63,7 +84,6 @@ export interface Calendar {
   name: string
   product: string
   description: string
-  type: CalendarType
   team: string
   /** Подразделение, которому принадлежит календарь. Если не задано — подразделение лида. */
   orgUnit?: string
@@ -103,11 +123,24 @@ export type Dataset = 'small' | 'large'
 
 export interface State {
   version: number
-  /** Демо-набор: 5 команд или ~300 команд. По умолчанию small. */
+  /** Демо-набор: 6 команд или ~300 команд. По умолчанию small. */
   dataset?: Dataset
   currentUserId: string | null
   people: Person[]
   calendars: Calendar[]
   notify: Record<string, NotifySettings>
   messages: TgMessage[]
+}
+
+/** Пользовательский шаблон ротации (хранится в localStorage отдельно от данных). */
+export interface RotationTemplate {
+  id: string
+  name: string
+  kind: LayerKind
+  rotation: { unit: RotationUnit; count: number }
+  /** отдых между сменами, в тех же единицах: «сутки через трое» = 1 сут. дежурства, 3 сут. отдыха */
+  offCount: number
+  handoffTime: string
+  parallel: number
+  restriction: Restriction
 }

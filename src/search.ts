@@ -1,12 +1,12 @@
 /** Поиск по командам, календарям, людям и системам + фильтры списков. Чистые функции: легко тестировать. */
 import { hasWeekGap, onCallAt } from './cache'
-import type { Calendar, CalendarType, Person } from './types'
+import type { Calendar, Person } from './types'
 
 /** Нижний регистр, ё → е, всё кроме букв и цифр — пробел. */
 export function norm(s: string) {
   return s.toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9+]+/g, ' ').trim()
 }
-const tokens = (q: string) => norm(q).split(' ').filter(Boolean)
+export const tokens = (q: string) => norm(q).split(' ').filter(Boolean)
 
 export type HitKind = 'calendar' | 'team' | 'person' | 'product'
 export interface SearchItem {
@@ -31,13 +31,13 @@ export function buildIndex(people: Person[], calendars: Calendar[]): SearchItem[
   const teamCals = new Map<string, string[]>()
   for (const c of calendars) teamCals.set(c.team, [...(teamCals.get(c.team) ?? []), c.id])
   for (const p of people) for (const t of p.teams) if (!teamCals.has(t)) teamCals.set(t, [])
-  for (const c of calendars) item({ kind: 'calendar', id: c.id, title: c.name, sub: c.product, href: `#/calendars/${c.id}`, calendarIds: [c.id] }, [c.product, c.team, c.orgUnit ?? ''])
+  for (const c of calendars) item({ kind: 'calendar', id: c.id, title: c.name, sub: c.product, href: `#/calendars/${c.id}`, calendarIds: [c.id] }, [c.team, c.product, c.orgUnit ?? ''])
   const calName = new Map(calendars.map((c) => [c.id, c.name]))
   for (const [t, ids] of teamCals) {
     // команда с единственным одноимённым календарём — не дублируем строку в выдаче
     if (ids.length === 1 && calName.get(ids[0]) === t) continue
     const org = calendars.find((c) => c.team === t)?.orgUnit ?? ''
-    item({ kind: 'team', id: 'team:' + t, title: t, sub: `${ids.length ? `${ids.length} календар${ids.length === 1 ? 'ь' : ids.length < 5 ? 'я' : 'ей'}` : 'без календаря'}${org ? ' · ' + org : ''}`, href: `#/teams/${encodeURIComponent(t)}`, calendarIds: ids }, [org])
+    item({ kind: 'team', id: 'team:' + t, title: t, sub: `Дежурства команды · ${ids.length ? `${ids.length} календар${ids.length === 1 ? 'ь' : ids.length < 5 ? 'я' : 'ей'}` : 'без календаря'}${org ? ' · ' + org : ''}`, href: `#/teams/${encodeURIComponent(t)}`, calendarIds: ids }, [org])
   }
   const products = new Map<string, string[]>()
   for (const c of calendars) products.set(c.product, [...(products.get(c.product) ?? []), c.id])
@@ -86,7 +86,7 @@ export function search(index: SearchItem[], q: string, limit = 40): Hit[] {
 }
 
 export const KIND_ORDER: HitKind[] = ['team', 'calendar', 'person', 'product']
-export const KIND_LABEL: Record<HitKind, string> = { team: 'Команды', calendar: 'Календари', person: 'Люди', product: 'Системы' }
+export const KIND_LABEL: Record<HitKind, string> = { team: 'Дежурства команд', calendar: 'Календари', person: 'Люди', product: 'Системы' }
 
 /** Группы для показа: порядок групп — по лучшему результату, в группе не больше perGroup. */
 export function groupHits(hits: Hit[], perGroup = 6) {
@@ -125,8 +125,8 @@ export function filterPeople(people: Person[], q: string, teamFirst: string[] = 
 /* ---------- фильтры календарей (дашборд и раздел «Календари») ---------- */
 
 export type Coverage = 'all' | 'now' | 'week'
-export interface CalFilter { q: string; coverage: Coverage; org: string; type: CalendarType | 'all' }
-export const EMPTY_FILTER: CalFilter = { q: '', coverage: 'all', org: '', type: 'all' }
+export interface CalFilter { q: string; coverage: Coverage; org: string }
+export const EMPTY_FILTER: CalFilter = { q: '', coverage: 'all', org: '' }
 
 export function calendarOrgUnit(c: Calendar, people: Map<string, Person> | Person[]): string {
   if (c.orgUnit) return c.orgUnit
@@ -137,7 +137,6 @@ export function calendarOrgUnit(c: Calendar, people: Map<string, Person> | Perso
 export function filterCalendars(cals: Calendar[], f: CalFilter, now: number, orgOf: (c: Calendar) => string): Calendar[] {
   const toks = tokens(f.q)
   return cals.filter((c) => {
-    if (f.type !== 'all' && c.type !== f.type) return false
     if (f.org && orgOf(c) !== f.org) return false
     if (toks.length) {
       const hay = ' ' + norm([c.name, c.product, c.team, orgOf(c)].join(' '))

@@ -4,7 +4,7 @@ import { tzLabel } from '../tz'
 import { involves } from '../cache'
 import { PersonPicker } from '../PersonPicker'
 import { peopleById, useNow, useStore } from '../store'
-import { Btn, Field, inputCls } from '../ui'
+import { Btn, Field, inlineCls, inputCls } from '../ui'
 import type { NotifySettings, TgKind } from '../types'
 
 const KIND_LABEL: Record<TgKind, string> = { shift_start: 'Начало смены', reminder: 'Напоминание', handover: 'Передача смены', escalation: 'Эскалация', test: 'Тест', signup: 'Запись на дежурство' }
@@ -46,7 +46,7 @@ export function Notifications({ incident }: { incident?: string }) {
             <label className="flex items-center gap-2"><input type="checkbox" checked={ns.onEscalation} onChange={(e) => setNs({ onEscalation: e.target.checked })} /> Эскалации</label>
             <label className="flex items-center gap-2"><input type="checkbox" checked={ns.quietHours} onChange={(e) => setNs({ quietHours: e.target.checked })} /> Тихий режим вне смены</label>
             <div className="flex items-center gap-2 text-muted">Напоминать
-              <select aria-label="Напоминать о смене" className={`${inputCls} w-36`} value={ns.beforeShift} onChange={(e) => setNs({ beforeShift: e.target.value as NotifySettings['beforeShift'] })}><option value="off">не нужно</option><option value="1h">за час</option><option value="1d">за сутки</option></select>
+              <select aria-label="Напоминать о смене" className={`${inlineCls} w-36`} value={ns.beforeShift} onChange={(e) => setNs({ beforeShift: e.target.value as NotifySettings['beforeShift'] })}><option value="off">не нужно</option><option value="1h">за час</option><option value="1d">за сутки</option></select>
             </div>
           </div>
           <Btn onClick={() => { sendTg({ toPersonId: me.id, kind: 'test', text: `🔔 Тестовое уведомление\nПривет, ${me.name.split(' ')[0]}! Уведомления о дежурствах будут приходить сюда.` }); setWho(me.id); toast(`Тест отправлен в ${ns.telegram} (демо)`) }}>Отправить тест</Btn>

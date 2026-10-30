@@ -1,4 +1,4 @@
-import type { Calendar, Layer, Person, Restriction, Shift } from './types'
+import type { Calendar, Layer, ManualSlot, Person, Restriction, Shift } from './types'
 import { addDaysTz, atDay, dayNumber, dayNumberOfIso, DEFAULT_TZ, fmtTz, isoDateTz, minutesOfDayTz, startOfDayTz, weekdayTz } from './tz'
 
 export const HOUR = 3600_000
@@ -65,8 +65,89 @@ export function rotationIndex(l: Layer, t: number, tz: string) {
   return Math.floor((eff - dayNumberOfIso(l.startsAt)) / periodDays(l))
 }
 
+/* ---------------- Ручной график ---------------- */
+export const isManual = (l: Pick<Layer, 'mode'>) => l.mode === 'manual'
+export interface TSlot { id: string; personId: string; start: number; end: number; note?: string }
+const NO_SLOTS: TSlot[] = []
+const slotsCache = new WeakMap<ManualSlot[], TSlot[]>()
+/** Дежурства ручного слоя в миллисекундах, по времени начала (кэш на массив — данные неизменяемые). */
+export function manualSlots(l: Pick<Layer, 'slots'>): TSlot[] {
+  if (!l.slots?.length) return NO_SLOTS
+  let v = slotsCache.get(l.slots)
+  if (!v) {
+    v = l.slots.map((x) => ({ id: x.id, personId: x.personId, start: +new Date(x.start), end: +new Date(x.end), note: x.note }))
+      .filter((x) => x.end > x.start).sort((x, y) => x.start - y.start || x.end - y.end)
+    slotsCache.set(l.slots, v)
+  }
+  return v
+}
+export function slotsAt(l: Pick<Layer, 'slots'>, t: number): TSlot[] {
+  const all = manualSlots(l)
+  const out: TSlot[] = []
+  for (const x of all) { if (x.start > t) break; if (t < x.end) out.push(x) }
+  return out
+}
+const uniq = (a: string[]) => [...new Set(a)]
+/** Слой с новыми дежурствами: участники = все, кто есть в графике (для поиска, прав, снятия). */
+export function withSlots(l: Layer, slots: ManualSlot[]): Layer {
+  const sorted = [...slots].sort((x, y) => +new Date(x.start) - +new Date(y.start))
+  return { ...l, slots: sorted, participants: uniq(sorted.map((x) => x.personId)) }
+}
+export function makeSlot(x: { personId: string; start: number; end: number; note?: string; id?: string }): ManualSlot {
+  if (!(x.end > x.start)) throw new Error('Окончание раньше начала')
+  return { id: x.id ?? 'sl-' + uid(), personId: x.personId, start: new Date(x.start).toISOString(), end: new Date(x.end).toISOString(), ...(x.note ? { note: x.note } : {}) }
+}
+/** Пересечения нового интервала с дежурствами слоя (кроме редактируемого). */
+export function slotOverlaps(l: Pick<Layer, 'slots'>, a: number, b: number, exceptId?: string): TSlot[] {
+  return manualSlots(l).filter((x) => x.id !== exceptId && x.start < b && a < x.end)
+}
+/** Предупреждение о пересечении: при одном месте любое наложение — предупреждение, при нескольких — только сверх мест или тот же человек дважды. */
+export function overlapWarning(l: Pick<Layer, 'slots' | 'parallel'>, personId: string, a: number, b: number, exceptId?: string): string | null {
+  const ov = slotOverlaps(l, a, b, exceptId)
+  if (!ov.length) return null
+  if (personId && ov.some((x) => x.personId === personId)) return 'Этот человек уже дежурит в этом слое в это время'
+  if (l.parallel <= 1) return `Пересекается с ${ov.length === 1 ? 'другим дежурством' : `${ov.length} дежурствами`}: в слое одно место`
+  const pts = [a, ...ov.map((x) => x.start).filter((t) => t > a && t < b)]
+  const peak = Math.max(...pts.map((t) => 1 + ov.filter((x) => x.start <= t && t < x.end).length))
+  return peak > l.parallel ? `В слое ${l.parallel} места, а здесь одновременно ${peak}` : null
+}
+/**
+ * «Скопировать неделю» / «Повторить на N недель»: дежурства, начинающиеся в [from, to), повторяются через 7·i суток
+ * (по календарю зоны — время на часах сохраняется при переходе на летнее время). Точные дубли не создаются.
+ */
+export function repeatSlots(l: Layer, from: number, to: number, weeks: number, tz: string): { layer: Layer; added: number } {
+  const src = manualSlots(l).filter((x) => x.start >= from && x.start < to)
+  const key = (p: string, a: number, b: number) => `${p}|${a}|${b}`
+  const have = new Set(manualSlots(l).map((x) => key(x.personId, x.start, x.end)))
+  const add: ManualSlot[] = []
+  for (let w = 1; w <= weeks; w++) {
+    for (const x of src) {
+      const a = addDaysTz(x.start, 7 * w, tz), b = addDaysTz(x.end, 7 * w, tz)
+      if (have.has(key(x.personId, a, b))) continue
+      have.add(key(x.personId, a, b))
+      add.push(makeSlot({ personId: x.personId, start: a, end: b, note: x.note }))
+    }
+  }
+  return { layer: add.length ? withSlots(l, [...(l.slots ?? []), ...add]) : l, added: add.length }
+}
+/** Пустые участки ручного слоя на [a, b). */
+export function manualGaps(l: Pick<Layer, 'slots'>, a: number, b: number): { start: number; end: number }[] {
+  const out: { start: number; end: number }[] = []
+  let cur = a
+  for (const x of manualSlots(l)) {
+    if (x.end <= cur) continue
+    if (x.start >= b) break
+    if (x.start > cur) out.push({ start: cur, end: Math.min(x.start, b) })
+    cur = Math.max(cur, x.end)
+    if (cur >= b) break
+  }
+  if (cur < b) out.push({ start: cur, end: b })
+  return out
+}
+
 /** Кто дежурит в слое в момент t (с учётом параллельных мест) */
 export function layerOnCall(l: Layer, t: number, tz: string): string[] {
+  if (l.mode === 'manual') return uniq(slotsAt(l, t).map((x) => x.personId))
   const n = l.participants.length
   if (!n) return []
   const idx = rotationIndex(l, t, tz)
@@ -82,6 +163,10 @@ export function layerSlot(l: Layer, t: number, slot: number, tz: string): string
 }
 /** Следующий по ротации (OneUptime: "Next in rotation") */
 export function nextInRotation(l: Layer, t: number, tz: string): string[] {
+  if (l.mode === 'manual') {
+    const nx = manualSlots(l).find((x) => x.start > t)
+    return nx ? uniq(manualSlots(l).filter((x) => x.start === nx.start).map((x) => x.personId)) : []
+  }
   const n = l.participants.length
   if (!n) return []
   const idx = Math.max(rotationIndex(l, t, tz), 0) + 1
@@ -91,6 +176,12 @@ export function nextInRotation(l: Layer, t: number, tz: string): string[] {
   return res
 }
 export function nextHandoff(l: Layer, t: number, tz: string) {
+  if (l.mode === 'manual') {
+    // ближайшая смена состава: конец текущего дежурства или начало следующего
+    let best = Infinity
+    for (const x of manualSlots(l)) { if (x.start > t) { best = Math.min(best, x.start); break } if (x.end > t) best = Math.min(best, x.end) }
+    return best
+  }
   const a = layerAnchor(l, tz)
   if (t < a) return a
   return layerBoundary(l, rotationIndex(l, t, tz) + 1, tz)
@@ -141,13 +232,14 @@ export function calendarOnCall(c: Calendar, t: number): OnCallEntry[] {
     const b = new Date(s.end).getTime()
     if (t < a || t >= b) continue
     if (s.replacesPersonId) {
-      const hit = entries.find((e) => e.personId === s.replacesPersonId)
-      if (hit) {
+      // подмена заменяет человека во всех слоях, где он сейчас дежурит
+      const hits = entries.filter((e) => e.personId === s.replacesPersonId)
+      for (const hit of hits) {
         hit.replaced = hit.personId
         hit.personId = s.personId
         hit.kind = 'override'
-        continue
       }
+      if (hits.length) continue
     }
     entries.push({ personId: s.personId, layerId: null, layerName: 'Разовое', kind: 'oneoff' })
   }
@@ -213,6 +305,7 @@ export function fmtDur(ms: number) {
   return r ? `${d} д ${r} ч` : `${d} д`
 }
 export function rotationLabel(l: Layer) {
+  if (l.mode === 'manual') return 'ручной график'
   const { unit, count } = l.rotation
   if (unit === 'day') return count === 1 ? 'по суткам' : `по ${count} сут.`
   return count === 1 ? 'по неделе' : `по ${count} нед.`
@@ -247,9 +340,11 @@ export function personDutySpans(calendars: Calendar[], personId: string, from: n
       const start = Math.max(from, +new Date(s.start))
       const end = Math.min(to, +new Date(s.end))
       if (end <= start) continue
+      // подмена показывается в слое заменяемого: «Сменный инженер 24×7 (подмена)»
+      const lay = s.replacesPersonId ? c.layers.find((l) => l.participants.includes(s.replacesPersonId!) && layerOnCall(l, start + 1, c.timezone).includes(s.replacesPersonId!)) ?? c.layers.find((l) => l.participants.includes(s.replacesPersonId!)) : undefined
       out.push({
         start, end, personId, calendarId: c.id, calendarName: c.name, layerId: null,
-        layerName: s.replacesPersonId ? 'Подмена' : 'Разовое', kind: s.replacesPersonId ? 'override' : 'oneoff', replacedId: s.replacesPersonId, note: s.note,
+        layerName: s.replacesPersonId ? lay?.name ?? 'Подмена' : 'Разовое', kind: s.replacesPersonId ? 'override' : 'oneoff', replacedId: s.replacesPersonId, note: s.note,
       })
     }
   }

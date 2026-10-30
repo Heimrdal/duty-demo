@@ -25,9 +25,10 @@ describe('эскалация', () => {
     expect(chain[0].people.map((p) => p.id)).not.toContain('u-sc-mgr')
   })
 
-  test('уровень «Дежурный ситуационного центра» — текущая смена СЦ', () => {
+  test('уровень «Дежурный другого календаря» (СЦ) — текущая смена СЦ', () => {
     const chain = resolveChain(cal('cal-ib'), PEOPLE, T, cals)
-    const sc = chain.find((l) => l.target === 'sitcenter')!
+    const sc = chain.find((l) => l.target === 'calendar')!
+    expect(sc.label).toBe('Дежурный «Ситуационный центр»')
     expect(sc.people.map((p) => p.id)).toEqual(['u-sc2', 'u-sc3'])
     expect(sc.people.map((p) => p.id)).not.toContain('u-sc-mgr')
   })
@@ -43,7 +44,7 @@ describe('эскалация', () => {
   })
 
   test('уровень 1 принудительно «дежурные», даже если правило испорчено', () => {
-    const broken: Calendar = { ...cal('cal-pay'), escalation: [{ id: 'x', target: 'manager', delayMin: 7 }, ...cal('cal-pay').escalation.slice(1)] }
+    const broken: Calendar = { ...cal('cal-pay'), escalation: [{ id: 'x', targets: [{ target: 'manager' }], delayMin: 7 }, ...cal('cal-pay').escalation.slice(1)] }
     const chain = resolveChain(broken, PEOPLE, T, cals)
     expect(chain[0].target).toBe('oncall')
     expect(chain[0].delayMin).toBe(0)
@@ -56,7 +57,7 @@ describe('эскалация', () => {
   })
 })
 
-describe('миграция localStorage v3 → v4', () => {
+describe('миграция localStorage v3 → v5', () => {
   test('зона, оргструктура и уровень 1', () => {
     const v3 = {
       version: 3, currentUserId: 'u-ib1',
@@ -71,7 +72,7 @@ describe('миграция localStorage v3 → v4', () => {
     expect(ib1.teams.sort()).toEqual(['Интернет-банк', 'СБП']) // членство в СБП сохранено
     expect(s.calendars.every((c) => c.timezone === 'Europe/Moscow')).toBe(true)
     const sc = s.calendars.find((c) => c.id === 'cal-sc')!
-    expect(sc.escalation.map((e) => e.target)).toEqual(['oncall', 'manager'])
+    expect(sc.escalation.map((e) => e.targets.map((r) => r.target))).toEqual([['oncall'], ['manager']])
   })
   test('чужие версии не принимаются', () => {
     expect(migrateState({ version: 2 })).toBeNull()

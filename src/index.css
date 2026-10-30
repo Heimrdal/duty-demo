@@ -68,6 +68,10 @@
   --shadow-card: var(--c-shadow);
 }
 
+/* невалидные поля форм: красная рамка (aria-invalid ставят Field и формы) */
+input[aria-invalid='true'], select[aria-invalid='true'], textarea[aria-invalid='true'] { border-color: var(--c-danger) !important; }
+input[aria-invalid='true']:focus, select[aria-invalid='true']:focus { box-shadow: 0 0 0 2px color-mix(in srgb, var(--c-danger) 25%, transparent) !important; }
+
 :root {
   --c-canvas: #f7f7f8;
   --c-surface: #ffffff;
@@ -169,3 +173,9 @@ input, select, textarea { accent-color: var(--c-accent); color: var(--c-ink); ba
     transition: none !important;
   }
 }
+
+/* Неделя: неактивные часы внутри смены и пустые места ручного графика */
+.hatch-off { background-image: repeating-linear-gradient(135deg, color-mix(in srgb, var(--c-ink) 16%, transparent) 0 1.5px, transparent 1.5px 6px); background-color: color-mix(in srgb, var(--c-ink) 3%, var(--c-surface)); }
+.slot-gap { border: 1px dashed color-mix(in srgb, var(--c-danger) 45%, transparent); background: color-mix(in srgb, var(--c-danger) 6%, transparent); }
+.drag-preview { background: color-mix(in srgb, var(--c-accent) 18%, transparent); outline: 1.5px solid var(--c-accent); outline-offset: -1.5px; }
+.tint-warn { background: color-mix(in srgb, var(--c-warn) 12%, transparent); color: var(--c-warn); }

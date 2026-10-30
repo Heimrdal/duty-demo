@@ -1,7 +1,7 @@
 import { useStore } from './store'
 import type { Dataset } from './types'
 
-const OPTS: [Dataset, string][] = [['small', '5 команд'], ['large', '300 команд']]
+const OPTS: [Dataset, string][] = [['small', '6 команд'], ['large', '300 команд']]
 
 /** Переключатель демо-набора. Смена набора сбрасывает локальные изменения. */
 export function DatasetToggle({ className = '' }: { className?: string }) {
@@ -11,7 +11,7 @@ export function DatasetToggle({ className = '' }: { className?: string }) {
     if (d === cur) return
     if (!window.confirm('Локальные изменения (смены, подмены, настройки календарей) будут сброшены. Переключить демо-набор?')) return
     setDataset(d)
-    toast(d === 'large' ? 'Загружен большой набор: 300 команд, ~1500 сотрудников' : 'Загружен исходный набор: 5 команд')
+    toast(d === 'large' ? 'Загружен большой набор: 300 команд, ~1500 сотрудников' : 'Загружен исходный набор: 6 команд')
   }
   return (
     <div className={`flex flex-wrap items-center gap-2 text-sm ${className}`}>

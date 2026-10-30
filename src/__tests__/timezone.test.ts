@@ -31,6 +31,7 @@ const EXPECTED: Record<string, Record<string, string[]>> = {
     'cal-ib': ['u-ib1@l-ib-dev', 'u-ib2@l-ib-dev', 'u-ib3@l-ib-dev', 'u-ib-lead@l-ib-sre', 'u-mon2@l-ib-sre'],
     'cal-pay': ['u-pay1@l-pay-main'],
     'cal-sbp': ['u-sbp1@l-sbp-week', 'u-pay1@shift'],
+    'cal-l2': ['u-sc2@l-l2-manual'], // ручной график: день 08–20, ночь 20–08
   },
   '2026-10-30T06:00:00Z': { // пт 09:00 МСК — передача СЦ и мониторинга
     'cal-sc': ['u-sc2@l-sc-main', 'u-sc3@l-sc-shadow'],
@@ -38,6 +39,7 @@ const EXPECTED: Record<string, Record<string, string[]>> = {
     'cal-ib': ['u-ib1@l-ib-dev', 'u-ib2@l-ib-dev', 'u-ib3@l-ib-dev', 'u-ib-lead@l-ib-sre', 'u-mon2@l-ib-sre'],
     'cal-pay': ['u-pay1@l-pay-main'],
     'cal-sbp': ['u-sbp1@l-sbp-week', 'u-pay1@shift'],
+    'cal-l2': ['u-sc2@l-l2-manual'], // ручной график: день 08–20, ночь 20–08
   },
   '2026-10-30T07:30:00Z': { // пт 10:30 МСК — случай из аудита F-01
     'cal-sc': ['u-sc2@l-sc-main', 'u-sc3@l-sc-shadow'],
@@ -45,6 +47,7 @@ const EXPECTED: Record<string, Record<string, string[]>> = {
     'cal-ib': ['u-ib-lead@l-ib-dev', 'u-pay1@l-ib-dev', 'u-sbp1@l-ib-dev', 'u-mon2@l-ib-sre'],
     'cal-pay': ['u-pay1@l-pay-main'],
     'cal-sbp': ['u-sbp1@l-sbp-week', 'u-pay1@shift'],
+    'cal-l2': ['u-sc2@l-l2-manual'], // ручной график: день 08–20, ночь 20–08
   },
   '2026-10-30T20:59:59Z': { // пт 23:59:59 МСК
     'cal-sc': ['u-sc2@l-sc-main'],
@@ -52,6 +55,7 @@ const EXPECTED: Record<string, Record<string, string[]>> = {
     'cal-ib': ['u-ib-lead@l-ib-dev', 'u-pay1@l-ib-dev', 'u-sbp1@l-ib-dev', 'u-mon2@l-ib-sre'],
     'cal-pay': ['u-pay1@l-pay-main'],
     'cal-sbp': ['u-sbp1@l-sbp-week', 'u-pay1@shift'],
+    'cal-l2': ['u-mon1@l-l2-manual'], // ручной график: день 08–20, ночь 20–08
   },
   '2026-10-30T21:00:00Z': { // сб 00:00 МСК — начинается слой выходных СБП, разовая смена заканчивается
     'cal-sc': ['u-sc2@l-sc-main'],
@@ -59,6 +63,7 @@ const EXPECTED: Record<string, Record<string, string[]>> = {
     'cal-ib': ['u-ib-lead@l-ib-dev', 'u-pay1@l-ib-dev', 'u-sbp1@l-ib-dev', 'u-mon2@l-ib-sre'],
     'cal-pay': ['u-pay1@l-pay-main'],
     'cal-sbp': ['u-sbp1@l-sbp-week', 'u-pay2@l-sbp-weekend'],
+    'cal-l2': ['u-mon1@l-l2-manual'], // ручной график: день 08–20, ночь 20–08
   },
   '2026-10-31T07:00:00Z': { // сб 10:00 МСК
     'cal-sc': ['u-sc3@l-sc-main'],
@@ -66,6 +71,7 @@ const EXPECTED: Record<string, Record<string, string[]>> = {
     'cal-ib': ['u-ib1@l-ib-dev', 'u-ib2@l-ib-dev', 'u-ib3@l-ib-dev', 'u-ib-lead@l-ib-sre', 'u-mon2@l-ib-sre'],
     'cal-pay': ['u-pay1@l-pay-main'],
     'cal-sbp': ['u-sbp1@l-sbp-week', 'u-pay2@l-sbp-weekend'],
+    'cal-l2': ['u-sc1@l-l2-manual'], // ручной график: день 08–20, ночь 20–08
   },
 }
 

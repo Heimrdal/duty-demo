@@ -17,7 +17,7 @@ import { Avatar, Menu } from './ui'
 const NAV = [
   ['', 'Сейчас'],
   ['calendars', 'Календари'],
-  ['teams', 'Команды'],
+  ['teams', 'Дежурства команд'],
   ['escalation', 'Эскалации'],
   ['notifications', 'Уведомления'],
   ['people', 'Сотрудники'],
@@ -118,10 +118,10 @@ export default function App() {
       <div className="min-w-0 flex-1">
         <header className="flex items-center justify-between gap-3 border-b border-line px-4 py-3 md:hidden">
           <span className="text-sm font-semibold">Дежурства</span>
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             <button type="button" data-testid="search-open-mobile" className="rounded-lg border border-line px-2 py-1 text-xs text-muted" aria-label="Поиск" onClick={() => setSearching(true)}>Поиск</button>
             <button className="text-xs text-muted" aria-label={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'} onClick={toggle}>{theme === 'dark' ? 'Светлая' : 'Тёмная'}</button>
-            <select aria-label="Раздел" className="rounded-lg border border-line bg-surface px-2 py-1 text-sm" value={route[0] ?? ''} onChange={(e) => (location.hash = '#/' + e.target.value)}>{NAV.map(([to, l]) => <option key={to} value={to}>{l}</option>)}</select>
+            <select aria-label="Раздел" className="min-w-0 max-w-40 rounded-lg border border-line bg-surface px-2 py-1 text-sm" value={route[0] ?? ''} onChange={(e) => (location.hash = '#/' + e.target.value)}>{NAV.map(([to, l]) => <option key={to} value={to}>{l}</option>)}</select>
           </div>
         </header>
         <main className="rise mx-auto w-full max-w-[1180px] px-5 py-8 md:px-10 md:py-10">{page}</main>

@@ -51,8 +51,8 @@ function TeamList() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="text-2xl font-semibold">Команды</h1>
-        <p className="mt-1 text-sm text-muted">Таймлайн людей, смен и покрытия.</p>
+        <h1 className="text-2xl font-semibold">Дежурства команд</h1>
+        <p className="mt-1 text-sm text-muted">Выберите команду: кто когда дежурит, смены и дыры в покрытии.</p>
       </header>
       <div className="flex flex-wrap items-center gap-3">
         <input type="search" aria-label="Поиск команд" data-testid="teams-search" className={`${inputCls} max-w-sm`} placeholder="Команда, календарь или подразделение" value={q} onChange={(e) => setQ(e.target.value)} />
@@ -83,7 +83,7 @@ function TeamList() {
                       </span>
                       <span className="shrink-0 text-right text-sm">
                         {t.cals.length > 0 && (first ? <span className="text-muted">Сейчас: <span className="text-ink">{first.name}</span>{on.length > 1 ? ` +${on.length - 1}` : ''}</span> : <span className="text-danger">никто не дежурит</span>)}
-                        <span className="ml-4 text-accent">Таймлайн</span>
+                        <span className="ml-4 text-accent">Дежурства команды</span>
                       </span>
                     </a>
                   )
@@ -103,7 +103,7 @@ export function TeamView({ name }: { name: string }) {
   const people = state.people
   const known = people.some((p) => p.teams.includes(name)) || state.calendars.some((c) => c.team === name)
   if (!known) {
-    return <Empty title="Команда не найдена" text="Откройте список команд и выберите таймлайн." action={<a className="text-sm text-accent" href="#/teams">К командам</a>} />
+    return <Empty title="Команда не найдена" text="Откройте «Дежурства команд» и выберите команду." action={<a className="text-sm text-accent" href="#/teams">К дежурствам команд</a>} />
   }
   const cals = state.calendars.filter((c) => c.team === name)
   const leads = [...new Set(cals.map((c) => c.leadId))].map((id) => people.find((p) => p.id === id)).filter((p) => !!p)
@@ -113,8 +113,8 @@ export function TeamView({ name }: { name: string }) {
   return (
     <div className="space-y-8">
       <header>
-        <a href="#/teams" className="text-sm text-muted hover:text-ink">Команды</a>
-        <h1 className="mt-3 text-2xl font-semibold">{name}</h1>
+        <a href="#/teams" className="text-sm text-muted hover:text-ink">Дежурства команд</a>
+        <h1 className="mt-3 text-2xl font-semibold" data-testid="team-title">Дежурства команды «{name}»</h1>
         <div className="mt-3 space-y-1 text-sm text-muted">
           <p>Лид календаря · <span className="text-ink">{leads.length ? leads.map((p) => p.name).join(', ') : '—'}</span></p>
           <p>Руководитель лида · <span className="text-ink">{managers.length ? managers.map((p) => p.name).join(', ') : '—'}</span></p>

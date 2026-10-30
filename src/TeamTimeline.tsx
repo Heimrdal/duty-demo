@@ -147,6 +147,7 @@ export function TeamTimeline({ team }: { team: string }) {
       title: person.name,
       lines: [
         `${duty.calendarName} · ${duty.layerName}${duty.kind === 'override' ? ' (подмена)' : ''}`,
+        ...(duty.replacedId ? [`Вместо: ${state.people.find((x) => x.id === duty.replacedId)?.name ?? ''}`] : []),
         `${fmtDT(duty.start, ctz)} — ${fmtDT(duty.end, ctz)} · ${fmtDur(duty.end - duty.start)}`,
         `Часовой пояс: ${tzName(ctz)}`,
         ...(duty.note ? [duty.note] : []),
@@ -496,6 +497,7 @@ function PersonRow({ person, me, lead, guest, items, overlaps, laneCount, box, s
   onMove: (e: PointerEvent<HTMLDivElement>, span: DutySpan) => void
   onMoveUp: (e: PointerEvent<HTMLDivElement>, span: DutySpan) => void
 }) {
+  const { state } = useStore()
   const height = Math.max(56, 18 + laneCount * 24)
   return (
     <div ref={rowRef} data-row={me ? 'me' : undefined} className={`flex border-t border-line ${drop ? 'bg-accent-soft' : ''}`}>
@@ -545,7 +547,8 @@ function PersonRow({ person, me, lead, guest, items, overlaps, laneCount, box, s
               onPointerUp={(e) => onMoveUp(e, duty)}
               onPointerCancel={(e) => onMoveUp(e, duty)}
               onMouseEnter={(e) => onTip(e, person.name, [
-                `${duty.layerName} · ${duty.calendarName}`,
+                `${duty.layerName}${hatch ? ' · подмена' : ''} · ${duty.calendarName}`,
+                ...(duty.replacedId ? [`вместо ${state.people.find((x) => x.id === duty.replacedId)?.name ?? ''}`] : []),
                 `${fmtDT(duty.start)} — ${fmtDT(duty.end)} · ${fmtDur(duty.end - duty.start)}`,
                 ...(duty.note ? [duty.note] : []),
                 ...(overlapped ? ['Оранжевая рамка с «!» — две смены сразу'] : []),

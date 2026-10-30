@@ -1,40 +1,15 @@
-import { useId, useMemo, useState } from 'react'
-import { addDays, addGap, calendarOnCall, describePattern, makeRemoval, fmtDT, fmtDur, HOUR, hm, isoDate, layerBoundary, layerOnCall, rotationLabel, startOfDay, uid, weekday } from './engine'
+import { useId, useMemo, useRef, useState } from 'react'
+import { addDays, addGap, calendarOnCall, describePattern, makeRemoval, makeSlot, manualSlots, fmtDT, fmtDur, HOUR, hm, isoDate, layerBoundary, layerOnCall, overlapWarning, repeatSlots, rotationLabel, startOfDay, uid, weekday, withSlots } from './engine'
 import { makeShift, teamFirstIds, upsertShift } from './perm'
 import { atDay, dayNumber, DEFAULT_TZ, fromInputTz, toInputTz, tzLabel } from './tz'
 import { PersonPicker } from './PersonPicker'
 import { peopleById, useStore } from './store'
-import { Avatar, Btn, Field, inputCls, KIND_META, KindMark, Modal } from './ui'
-import type { Calendar, Layer, LayerKind, Restriction, Shift } from './types'
+import { Avatar, Btn, Field, focusFirstInvalid, FormErrors, inlineCls, inputCls, KIND_META, KindMark, Modal } from './ui'
+import { allTemplates, queueSize, templateHint, templatePatch, type TemplateItem } from './templates'
+import { layerStepErrors } from './validation'
+import type { Calendar, Layer, LayerKind, Shift } from './types'
 
-const mondayOf = (t: number, tz: string) => { const x = startOfDay(t, tz); return addDays(x, -weekday(x, tz), tz) }
 const atHour = (dayStart: number, h: number, tz: string) => atDay(dayNumber(dayStart, tz), h * 60, tz)
-const noneR = (): Restriction => ({ type: 'none', from: '00:00', to: '00:00', days: [] })
-
-interface Tpl { id: string; name: string; hint: string; patch: (now: number, tz: string) => Partial<Layer> }
-
-const TEMPLATES: Tpl[] = [
-  {
-    id: 'sutki', name: 'Сутки через трое', hint: 'Сутки в очереди из четырёх, передача в 09:00',
-    patch: (now, tz) => ({ kind: 'primary', startsAt: isoDate(now, tz), handoffTime: '09:00', rotation: { unit: 'day', count: 1 }, parallel: 1, restriction: noneR() }),
-  },
-  {
-    id: 'dev-week', name: 'Неделя разработки', hint: 'Неделя, передача в понедельник в 10:00',
-    patch: (now, tz) => ({ kind: 'primary', startsAt: isoDate(mondayOf(now, tz), tz), handoffTime: '10:00', rotation: { unit: 'week', count: 1 }, parallel: 1, restriction: noneR() }),
-  },
-  {
-    id: 'two-two', name: '2/2 по 12 часов', hint: 'Двое суток, окно 09:00–21:00',
-    patch: (now, tz) => ({ kind: 'business', startsAt: isoDate(now, tz), handoffTime: '09:00', rotation: { unit: 'day', count: 2 }, parallel: 1, restriction: { type: 'daily', from: '09:00', to: '21:00', days: [] } }),
-  },
-  {
-    id: 'weekends', name: 'Только выходные', hint: 'Суббота и воскресенье, круглосуточно',
-    patch: (now, tz) => ({ kind: 'night', startsAt: isoDate(mondayOf(now, tz), tz), handoffTime: '00:00', rotation: { unit: 'week', count: 1 }, parallel: 1, restriction: { type: 'weekly', from: '00:00', to: '00:00', days: [5, 6] } }),
-  },
-  {
-    id: 'office', name: 'Рабочие часы 9-18', hint: 'Понедельник–пятница, 09:00–18:00',
-    patch: (now, tz) => ({ kind: 'business', startsAt: isoDate(mondayOf(now, tz), tz), handoffTime: '09:00', rotation: { unit: 'week', count: 1 }, parallel: 1, restriction: { type: 'weekly', from: '09:00', to: '18:00', days: [0, 1, 2, 3, 4] } }),
-  },
-]
 
 /* ---------------- «Взять дежурство» ---------------- */
 function preferredCalendars(calendars: Calendar[], userId: string, teams: string[], pinned?: string) {
@@ -174,20 +149,38 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
   const byId = peopleById(state.people)
   const toggle = (id: string) => set({ participants: l.participants.includes(id) ? l.participants.filter((x) => x !== id) : [...l.participants, id] })
   const move = (i: number, d: number) => { const a = [...l.participants]; const j = i + d; if (j < 0 || j >= a.length) return; [a[i], a[j]] = [a[j], a[i]]; set({ participants: a }) }
-  const okStep = [l.name.trim().length > 0, l.rotation.count > 0, l.participants.length > 0, true, true][step]
-  const applyTpl = (t: Tpl) => {
-    const patch = t.patch(Date.now(), tz)
+  // ошибки шага показываем по нажатию «Далее», кнопка не блокируется молча
+  const [tried, setTried] = useState(-1)
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const stepErrors = layerStepErrors(step, { ...l, startDate: l.startsAt })
+  const err = (k: keyof typeof stepErrors) => (tried === step ? stepErrors[k]?.message : undefined)
+  // «Ручной график»: без ротации, участников и часов — сразу к проверке
+  const manual = l.mode === 'manual'
+  const order = manual ? [0, 4] : [0, 1, 2, 3, 4]
+  const pos = Math.max(0, order.indexOf(step))
+  const next = () => {
+    if (Object.keys(stepErrors).length) { setTried(step); focusFirstInvalid(bodyRef.current); return }
+    setTried(-1)
+    setStep(order[pos + 1] ?? step)
+  }
+  const back = () => { setTried(-1); if (pos) setStep(order[pos - 1]); else onClose() }
+  const setMode = (m: 'rotation' | 'manual') => setL((x) => (m === 'manual'
+    ? { ...x, mode: 'manual', slots: x.slots ?? [], participants: [...new Set((x.slots ?? []).map((s) => s.personId))] }
+    : { ...x, mode: undefined, slots: undefined, participants: x.participants.length ? x.participants : state.currentUserId ? [state.currentUserId] : [] }))
+  const templates = allTemplates()
+  const applyTpl = (t: TemplateItem) => {
+    const patch = templatePatch(t, Date.now(), tz)
     setL((x) => ({
       ...x,
       ...patch,
-      name: !x.name.trim() || TEMPLATES.some((p) => p.name === x.name) ? t.name : x.name,
+      name: !x.name.trim() || templates.some((p) => p.name === x.name) ? t.name : x.name,
       rotation: patch.rotation ? { ...patch.rotation } : x.rotation,
       restriction: patch.restriction ? { ...patch.restriction, days: [...patch.restriction.days] } : x.restriction,
     }))
     setTpl(t.id)
   }
   const save = () => {
-    const fixed = { ...l, parallel: Math.max(1, Math.min(l.parallel, l.participants.length)) }
+    const fixed = manual ? withSlots({ ...l, parallel: Math.max(1, l.parallel) }, l.slots ?? []) : { ...l, parallel: Math.max(1, Math.min(l.parallel, l.participants.length)) }
     updateCalendar(c.id, (cal) => ({ ...cal, layers: layer ? cal.layers.map((x) => (x.id === l.id ? fixed : x)) : [...cal.layers, fixed] }))
     toast(layer ? 'Слой обновлён' : `Слой «${l.name}» добавлен в календарь «${c.name}»`)
     onClose()
@@ -200,74 +193,97 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
     })
   }, [l, tz])
   const dayNames = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
-  const active = TEMPLATES.find((t) => t.id === tpl)
+  const active = templates.find((t) => t.id === tpl)
   const pattern = describePattern(l, (id) => state.people.find((p) => p.id === id)?.name ?? id)
-  const needForSutki = 4 * Math.max(1, Math.min(l.parallel, Math.max(l.participants.length, 1)))
-  const sutkiMatches = l.rotation.unit === 'day' && l.rotation.count === 1 && pattern.regular && pattern.onPeriods === 1 && pattern.offPeriods === 3
+  // ритм шаблона «N через M» получается только при нужной длине очереди
+  const need = active && active.offCount && active.rotation.unit === l.rotation.unit && active.rotation.count === l.rotation.count
+    ? queueSize({ ...active, parallel: Math.max(1, Math.min(l.parallel, Math.max(l.participants.length, 1))) }) : null
   const patternNote = (
     <div className="rounded-lg bg-surface-2 px-3 py-2 text-sm leading-relaxed">
       <div data-testid="pattern-line">{pattern.line}</div>
-      {tpl === 'sutki' && l.participants.length > 0 && !sutkiMatches && (
-        <div className="mt-1 text-muted">Чтобы вышло «сутки через трое» при {Math.min(l.parallel, l.participants.length)} параллельно, в очереди нужно {needForSutki} человек. Строка выше — фактический ритм.</div>
+      {active && need && l.participants.length > 0 && l.participants.length !== need && (
+        <div className="mt-1 text-muted">Чтобы вышло «{active.name.toLowerCase()}» при {Math.min(l.parallel, l.participants.length)} параллельно, в очереди нужно {need} человек (сейчас {l.participants.length}). Строка выше — фактический ритм.</div>
       )}
     </div>
   )
 
   return (
-    <Modal title={layer ? l.name || 'Слой' : 'Добавить ротацию'} onClose={onClose} wide>
+    <Modal title={layer ? l.name || 'Слой' : 'Добавить слой'} onClose={onClose} wide>
       <div className="mb-6 flex items-center justify-between gap-4 text-sm">
-        <div className="text-muted">Шаг {step + 1} из {steps.length} · {steps[step]}</div>
+        <div className="text-muted">Шаг {pos + 1} из {order.length} · {steps[step]}</div>
         <div className="flex gap-1">
-          {steps.map((s, i) => (
-            <button key={s} aria-label={s} disabled={i > step} onClick={() => i <= step && setStep(i)} className={`h-1.5 w-6 rounded-full ${i === step ? 'bg-accent' : i < step ? 'bg-accent/40' : 'bg-surface-2'}`} />
+          {order.map((i, k) => (
+            <button key={steps[i]} aria-label={steps[i]} disabled={k > pos} onClick={() => k <= pos && setStep(i)} className={`h-1.5 w-6 rounded-full ${k === pos ? 'bg-accent' : k < pos ? 'bg-accent/40' : 'bg-surface-2'}`} />
           ))}
         </div>
       </div>
+      <div ref={bodyRef}>
       {step === 0 && (
         <div className="space-y-6">
-          <div data-testid="layer-templates">
-            <div className="mb-2 text-sm font-medium">Шаблоны</div>
+          <Field label="Как заполняется слой">
+            {layer ? <p className="text-sm text-muted">{manual ? 'Ручной график — дежурства расставляются на вкладке «Расписание».' : 'Ротация — по очереди, автоматически.'}</p> : (
+              <div className="grid gap-2 sm:grid-cols-2" role="group" aria-label="Как заполняется слой">
+                {([['rotation', 'Ротация', 'По очереди, автоматически: шаблон, участники, часы'], ['manual', 'Ручной график', 'Дежурства расставляете сами — по часам, на неделе']] as const).map(([m, t, d]) => (
+                  <button key={m} type="button" data-testid={`mode-${m}`} aria-pressed={(m === 'manual') === manual} onClick={() => setMode(m)}
+                    className={`rounded-lg border px-3 py-2.5 text-left text-sm ${(m === 'manual') === manual ? 'border-accent bg-accent-soft' : 'border-line hover:bg-surface-2'}`}>
+                    <span className="block font-medium">{t}</span><span className="block text-xs text-muted">{d}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </Field>
+          {!manual && <div data-testid="layer-templates">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <span className="text-sm font-medium">Шаблоны</span>
+            </div>
             <div className="divide-y divide-line rounded-xl border border-line">
-              {TEMPLATES.map((t) => (
-                <button key={t.id} type="button" aria-pressed={tpl === t.id} onClick={() => applyTpl(t)} className={`flex w-full items-baseline justify-between gap-4 px-3 py-2.5 text-left text-sm hover:bg-surface-2 ${tpl === t.id ? 'bg-accent-soft ring-2 ring-inset ring-accent' : ''}`}>
-                  <span className="font-medium">{t.name}{tpl === t.id ? <span className="ml-2 text-xs font-medium text-accent">Выбран</span> : null}</span>
-                  <span className="text-right text-xs text-muted">{t.hint}</span>
-                </button>
+              {templates.map((t) => (
+                <div key={t.id} data-testid="tpl-row" data-builtin={t.builtin ? 'true' : undefined} className={`flex items-center gap-2 pr-2 ${tpl === t.id ? 'bg-accent-soft ring-2 ring-inset ring-accent' : ''}`}>
+                  <button type="button" aria-pressed={tpl === t.id} onClick={() => applyTpl(t)} className="flex min-w-0 flex-1 items-baseline justify-between gap-4 px-3 py-2.5 text-left text-sm hover:bg-surface-2">
+                    <span className="font-medium">{t.name}{tpl === t.id ? <span className="ml-2 text-xs font-medium text-accent">Выбран</span> : null}</span>
+                    <span className="text-right text-xs text-muted">{templateHint(t)}</span>
+                  </button>
+                </div>
               ))}
             </div>
             {active && <p className="mt-2 text-sm text-muted">Выбран шаблон «{active.name}».</p>}
-          </div>
-          <Field label="Название слоя" hint="Что покрывает слой: основная смена, ночь, резерв.">
-            <input autoFocus className={inputCls} value={l.name} onChange={(e) => set({ name: e.target.value })} placeholder="Например: Основная ротация разработки" />
+          </div>}
+          <Field label="Название слоя" hint="Что покрывает слой: основная смена, ночь, резерв." error={err('name')}>
+            <input autoFocus data-testid="layer-name" className={inputCls} value={l.name} onChange={(e) => set({ name: e.target.value })} placeholder={manual ? 'Например: Вторая линия, смены 12 часов' : 'Например: Основная ротация разработки'} />
           </Field>
           <Field label="Тип дежурства">
             <div className="flex flex-wrap gap-1">
-              {(Object.keys(KIND_META).filter((k) => k !== 'override') as LayerKind[]).map((k) => (
+              {(['primary', 'secondary'] as LayerKind[]).map((k) => (
                 <button key={k} type="button" aria-pressed={l.kind === k} onClick={() => set({ kind: k })} className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-sm ${l.kind === k ? 'bg-surface-2 text-ink' : 'text-muted hover:text-ink'}`}>
                   <span className="h-1.5 w-1.5 rounded-full" style={{ background: KIND_META[k].color }} />{KIND_META[k].label}
                 </button>
               ))}
             </div>
           </Field>
+          {manual && (
+            <Field label="Мест одновременно" hint="Сколько человек может дежурить в слое в одно и то же время. Пересечения сверх этого — с предупреждением.">
+              <select data-testid="manual-parallel" className={`${inlineCls} w-28`} value={l.parallel} onChange={(e) => set({ parallel: +e.target.value })}>{[1, 2, 3, 4].map((n) => <option key={n} value={n}>{n}</option>)}</select>
+            </Field>
+          )}
         </div>
       )}
       {step === 1 && (
         <div className="space-y-6">
           {active && <p className="text-sm font-medium">Шаблон «{active.name}» выбран. Длительность можно поправить.</p>}
           {patternNote}
-          <Field label="Длительность смены">
+          <Field label="Длительность смены" error={err('count')}>
             <div className="mb-3 flex flex-wrap gap-2">
               {[['day', 1, 'Сутки'], ['day', 2, '2 суток'], ['day', 3, '3 суток'], ['week', 1, 'Неделя'], ['week', 2, '2 недели'], ['week', 4, '4 недели']].map(([u, n, lbl]) => (
                 <button key={String(lbl)} type="button" aria-pressed={l.rotation.unit === u && l.rotation.count === n} onClick={() => set({ rotation: { unit: u as 'day' | 'week', count: n as number } })} className={`rounded-full px-3 py-1 text-sm ${l.rotation.unit === u && l.rotation.count === n ? 'bg-accent text-white' : 'bg-surface-2 text-muted hover:text-ink'}`}>{lbl}</button>
               ))}
             </div>
             <div className="flex items-center gap-2 text-sm text-muted">каждые
-              <input type="number" aria-label="Длительность смены, число" min={1} max={52} className={`${inputCls} w-20`} value={l.rotation.count} onChange={(e) => set({ rotation: { ...l.rotation, count: Math.max(1, +e.target.value) } })} />
-              <select aria-label="Единица длительности" className={`${inputCls} w-28`} value={l.rotation.unit} onChange={(e) => set({ rotation: { ...l.rotation, unit: e.target.value as 'day' | 'week' } })}><option value="day">сут.</option><option value="week">нед.</option></select>
+              <input type="number" aria-label="Длительность смены, число" aria-invalid={tried === step && !!stepErrors.count} min={1} max={52} className={`${inlineCls} w-20`} value={l.rotation.count} onChange={(e) => set({ rotation: { ...l.rotation, count: Math.max(1, +e.target.value) } })} />
+              <select aria-label="Единица длительности" className={`${inlineCls} w-28`} value={l.rotation.unit} onChange={(e) => set({ rotation: { ...l.rotation, unit: e.target.value as 'day' | 'week' } })}><option value="day">сут.</option><option value="week">нед.</option></select>
             </div>
           </Field>
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Начало ротации"><input type="date" className={inputCls} value={l.startsAt} onChange={(e) => set({ startsAt: e.target.value })} /></Field>
+            <Field label="Начало ротации" error={err('start')}><input type="date" className={inputCls} value={l.startsAt} onChange={(e) => set({ startsAt: e.target.value })} /></Field>
             <Field label={`Передача смены, ${tzLabel(tz)}`}><input type="time" className={inputCls} value={l.handoffTime} onChange={(e) => set({ handoffTime: e.target.value })} /></Field>
           </div>
         </div>
@@ -276,8 +292,8 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
         <div className="grid grid-cols-1 gap-8 md:grid-cols-2">
           <div>
             <div className="mb-2 text-sm font-medium">Участники</div>
-            {tpl === 'sutki' && <p className="mb-2 text-xs text-muted">Для «сутки через трое» на одно место обычно четверо. Шаблон выбран.</p>}
-            <PersonPicker testId="wizard-add" addMode people={state.people} exclude={l.participants} teamFirst={teamIds} teamLabel={`Команда «${c.team}»`} value="" onChange={(id) => id && toggle(id)} aria-label="Добавить участника" />
+            {active && need && <p className="mb-2 text-xs text-muted">Для «{active.name.toLowerCase()}» на {Math.min(l.parallel, Math.max(l.participants.length, 1)) > 1 ? `${Math.min(l.parallel, l.participants.length)} места` : 'одно место'} нужно {need} человек.</p>}
+            <PersonPicker testId="wizard-add" aria-invalid={tried === step && !!stepErrors.participants} addMode people={state.people} exclude={l.participants} teamFirst={teamIds} teamLabel={`Команда «${c.team}»`} value="" onChange={(id) => id && toggle(id)} aria-label="Добавить участника" />
             {teamIds.length > 0 && (
               <div className="mt-3 max-h-72 overflow-y-auto pr-1 scroll-thin">
                 <div className="mb-1 text-xs text-faint">Команда «{c.team}»</div>
@@ -289,6 +305,7 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
                 ))}
               </div>
             )}
+            {err('participants') && <p role="alert" className="mt-2 text-xs text-danger">{err('participants')}</p>}
             <p className="mt-2 text-xs text-muted">Коллег из других команд найдите через поиск: имя, telegram или подразделение.</p>
           </div>
           <div>
@@ -331,7 +348,7 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
       {step === 3 && (
         <div className="space-y-6">
           {active && <p className="text-sm text-muted">Часы из шаблона «{active.name}».</p>}
-          <Field label="Когда слой активен" hint="Вне этих часов работают другие слои календаря.">
+          <Field label="Когда слой активен" hint="Вне этих часов работают другие слои календаря." error={err('days')}>
             <div className="grid grid-cols-3 gap-2 text-sm">
               {([['none', 'Круглосуточно', '24×7'], ['daily', 'Каждый день', 'в заданные часы'], ['weekly', 'По дням недели', 'например, выходные']] as const).map(([v, a, b]) => (
                 <button key={v} type="button" aria-pressed={l.restriction.type === v} onClick={() => set({ restriction: { ...l.restriction, type: v } })} className={`rounded-lg border px-3 py-2 text-left ${l.restriction.type === v ? 'border-accent bg-accent-soft' : 'border-line'}`}><span className="font-medium">{a}</span><div className="text-xs text-muted">{b}</div></button>
@@ -347,14 +364,22 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
           {l.restriction.type === 'weekly' && (
             <div className="flex gap-2">
               {dayNames.map((d, i) => (
-                <button key={d} type="button" aria-pressed={l.restriction.days.includes(i)} onClick={() => set({ restriction: { ...l.restriction, days: l.restriction.days.includes(i) ? l.restriction.days.filter((x) => x !== i) : [...l.restriction.days, i] } })}
+                <button key={d} type="button" data-invalid={tried === step && !!stepErrors.days && i === 0 ? 'true' : undefined} aria-pressed={l.restriction.days.includes(i)} onClick={() => set({ restriction: { ...l.restriction, days: l.restriction.days.includes(i) ? l.restriction.days.filter((x) => x !== i) : [...l.restriction.days, i] } })}
                   className={`h-9 w-11 rounded-lg text-sm ${l.restriction.days.includes(i) ? 'bg-accent text-white' : 'bg-surface-2 text-muted'}`}>{d}</button>
               ))}
             </div>
           )}
         </div>
       )}
-      {step === 4 && (
+      {step === 4 && manual && (
+        <div className="space-y-3 text-sm" data-testid="manual-summary">
+          <div className="flex flex-wrap items-center gap-3"><span className="text-base font-medium">{l.name}</span><KindMark k={l.kind} /></div>
+          <p>Ручной график · мест одновременно: {l.parallel} · {tzLabel(tz)}</p>
+          <p className="text-muted">Автоматической ротации нет. После сохранения откройте «Расписание»: протяните по строке слоя, чтобы выбрать часы, или нажмите на пустое место — и выберите дежурного. «Скопировать неделю» и «Повторить на N недель» — в меню слоя.</p>
+          {!!l.slots?.length && <p className="text-muted">Дежурств в графике: {l.slots.length}</p>}
+        </div>
+      )}
+      {step === 4 && !manual && (
         <div className="space-y-4 text-sm">
           <div className="flex flex-wrap items-center gap-3"><span className="text-base font-medium">{l.name}</span><KindMark k={l.kind} /></div>
           {active && <p className="font-medium">Шаблон «{active.name}» выбран · одновременно {l.parallel}</p>}
@@ -370,9 +395,13 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
           </div>
         </div>
       )}
-      <div className="mt-8 flex justify-between">
-        <Btn variant="ghost" onClick={() => (step ? setStep(step - 1) : onClose())}>{step ? 'Назад' : 'Отмена'}</Btn>
-        {step < steps.length - 1 ? <Btn disabled={!okStep} onClick={() => setStep(step + 1)}>Далее</Btn> : <Btn onClick={save}>Сохранить слой</Btn>}
+      {tried === step && <div className="mt-4"><FormErrors missing={Object.values(stepErrors).map((e) => e!.label)} /></div>}
+      </div>
+      <div className="mt-8 flex flex-wrap items-center justify-between gap-2">
+        <Btn variant="ghost" onClick={back}>{pos ? 'Назад' : 'Отмена'}</Btn>
+        <div className="flex gap-2">
+          {pos < order.length - 1 ? <Btn data-testid="wizard-next" onClick={next}>Далее</Btn> : <Btn data-testid="wizard-save" onClick={save}>Сохранить слой</Btn>}
+        </div>
       </div>
     </Modal>
   )
@@ -418,6 +447,10 @@ export function AssignDutyModal({ c, init, onClose }: { c: Calendar; init?: Assi
   const [mode, setMode] = useState<'add' | 'replace'>(initReplaces ? 'replace' : 'add')
   const [replaces, setReplaces] = useState(initReplaces)
   const [note, setNote] = useState(editing?.note ?? '')
+  // дыру можно закрыть записью в слой с ручным графиком, а не разовым дежурством
+  const manualLayers = editing ? [] : c.layers.filter((l) => l.mode === 'manual')
+  const [into, setInto] = useState(init?.fill && manualLayers.length ? manualLayers[0].id : '')
+  const intoLayer = mode === 'add' ? manualLayers.find((l) => l.id === into) : undefined
   const sT = fromInputTz(start, tz)
   const eT = fromInputTz(end, tz)
   const empty = Number.isNaN(sT) || Number.isNaN(eT)
@@ -437,6 +470,15 @@ export function AssignDutyModal({ c, init, onClose }: { c: Calendar; init?: Assi
   const submit = () => {
     if (!valid) return
     const replaces = target
+    if (intoLayer) {
+      const before = intoLayer.slots ?? []
+      const slot = makeSlot({ personId, start: sT, end: eT, note: note || undefined })
+      updateCalendar(c.id, (cal) => ({ ...cal, layers: cal.layers.map((l) => (l.id === intoLayer.id ? withSlots(l, [...(l.slots ?? []), slot]) : l)) }))
+      sendTg({ toPersonId: personId, calendarId: c.id, kind: 'signup', text: `📅 Вас поставили на дежурство\nКалендарь: «${c.name}», слой «${intoLayer.name}»\nС ${fmtDT(sT, tz)} по ${fmtDT(eT, tz)} ${zl} (${fmtDur(eT - sT)})\nНазначил(а): ${me?.name ?? ''}` })
+      toast(`${name(personId)} в графике «${intoLayer.name}»`, { label: 'Вернуть', onClick: () => updateCalendar(c.id, (cal) => ({ ...cal, layers: cal.layers.map((l) => (l.id === intoLayer.id ? withSlots(l, before) : l)) })) })
+      onClose()
+      return
+    }
     let fresh: Shift
     try {
       fresh = makeShift({ personId, start: sT, end: eT, replacesPersonId: mode === 'replace' ? replaces : undefined, note: note || (mode === 'replace' ? `Замена: ${name(replaces)}` : 'Назначено лидом') })
@@ -474,6 +516,14 @@ export function AssignDutyModal({ c, init, onClose }: { c: Calendar; init?: Assi
             </button>
           </div>
         </Field>
+        {mode === 'add' && manualLayers.length > 0 && (
+          <Field label="Куда записать">
+            <select data-testid="assign-into" className={inputCls} value={into} onChange={(e) => setInto(e.target.value)}>
+              {manualLayers.map((l) => <option key={l.id} value={l.id}>В ручной график «{l.name}»</option>)}
+              <option value="">Разовым дежурством</option>
+            </select>
+          </Field>
+        )}
         {mode === 'replace' && (
           <Field label="Кого заменить">
             <PersonPicker testId="assign-replaces" people={replaceOptions.map((id) => peopleById(state.people).get(id)).filter((p) => !!p)} value={target} onChange={setReplaces}
@@ -494,7 +544,7 @@ export function AssignDutyModal({ c, init, onClose }: { c: Calendar; init?: Assi
         </Field>
         <Field label="Комментарий"><input className={inputCls} value={note} onChange={(e) => setNote(e.target.value)} placeholder="например: отпуск, больничный, релиз" /></Field>
         <div className="flex items-center justify-between gap-4 pt-2">
-          <div className="text-sm text-muted">{error ? <span id={errId} role="alert" className="text-danger">{error}</span> : <>{mode === 'replace' ? 'Замена' : 'Разовое'} · {fmtDur(eT - sT)} · с {fmtDT(sT, tz)} {zl}</>}</div>
+          <div className="text-sm text-muted">{error ? <span id={errId} role="alert" className="text-danger">{error}</span> : <>{mode === 'replace' ? 'Замена' : intoLayer ? 'Ручной график' : 'Разовое'} · {fmtDur(eT - sT)} · с {fmtDT(sT, tz)} {zl}</>}</div>
           <div className="flex gap-2"><Btn variant="ghost" onClick={onClose}>Отмена</Btn><Btn onClick={submit} disabled={!valid}>{editing ? 'Сохранить' : init?.fill && mode === 'add' ? 'Поставить' : 'Назначить'}</Btn></div>
         </div>
       </div>
@@ -626,6 +676,121 @@ export function RemoveDutyModal({ c, init, onClose, onReplace, onFill }: { c: Ca
             <Btn variant={gap && !fillId ? 'danger' : 'primary'} onClick={submit} className="whitespace-nowrap" disabled={!!error}>{fillId ? 'Снять и поставить' : gap ? 'Снять и оставить пустым' : 'Снять с дежурства'}</Btn>
           </div>
         </div>
+      </div>
+    </Modal>
+  )
+}
+
+/* ---------------- Ручной график: дежурство в слое ---------------- */
+export interface SlotInit { layerId: string; start?: number; end?: number; slotId?: string }
+
+/** Ошибки формы дежурства ручного графика. */
+export function slotErrors(x: { personId: string; start: number; end: number }) {
+  const e: Partial<Record<'person' | 'start' | 'end', { label: string; message: string }>> = {}
+  if (!x.personId) e.person = { label: 'кто дежурит', message: 'Выберите, кто дежурит' }
+  if (Number.isNaN(x.start)) e.start = { label: 'начало', message: 'Укажите дату и время начала' }
+  if (Number.isNaN(x.end)) e.end = { label: 'окончание', message: 'Укажите дату и время окончания' }
+  else if (!Number.isNaN(x.start) && x.end <= x.start) e.end = { label: 'окончание', message: 'Окончание должно быть позже начала' }
+  return e
+}
+
+export function SlotModal({ c, init, onClose }: { c: Calendar; init: SlotInit; onClose: () => void }) {
+  const { state, updateCalendar, sendTg, toast } = useStore()
+  const tz = c.timezone || DEFAULT_TZ
+  const layer = c.layers.find((l) => l.id === init.layerId)
+  const editing = layer?.slots?.find((x) => x.id === init.slotId)
+  const [personId, setPersonId] = useState(editing?.personId ?? '')
+  const [start, setStart] = useState(() => toInputTz(editing ? +new Date(editing.start) : init.start ?? Date.now(), tz))
+  const [end, setEnd] = useState(() => toInputTz(editing ? +new Date(editing.end) : init.end ?? Date.now() + HOUR, tz))
+  const [note, setNote] = useState(editing?.note ?? '')
+  const [tried, setTried] = useState(false)
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const teamFirst = useMemo(() => teamFirstIds(c, state.people), [c, state.people])
+  if (!layer) return null
+  const sT = fromInputTz(start, tz), eT = fromInputTz(end, tz)
+  const errs = slotErrors({ personId, start: sT, end: eT })
+  const warn = !Object.keys(errs).length ? overlapWarning(layer, personId, sT, eT, editing?.id) : null
+  const name = (id: string) => state.people.find((p) => p.id === id)?.name ?? ''
+  const apply = (fn: (l: Layer) => Layer) => updateCalendar(c.id, (cal) => ({ ...cal, layers: cal.layers.map((l) => (l.id === layer.id ? fn(l) : l)) }))
+  const before = layer.slots ?? []
+  const undo = () => apply((l) => withSlots(l, before))
+  const save = () => {
+    if (Object.keys(errs).length) { setTried(true); focusFirstInvalid(bodyRef.current); return }
+    const slot = makeSlot({ id: editing?.id, personId, start: sT, end: eT, note: note.trim() || undefined })
+    apply((l) => withSlots(l, [...(l.slots ?? []).filter((x) => x.id !== slot.id), slot]))
+    sendTg({ toPersonId: personId, calendarId: c.id, kind: 'signup', text: `📅 ${editing ? 'Ваше дежурство изменено' : 'Вас поставили на дежурство'}\nКалендарь: «${c.name}», слой «${layer.name}»\nС ${fmtDT(sT, tz)} по ${fmtDT(eT, tz)} ${tzLabel(tz)} (${fmtDur(eT - sT)})` })
+    toast(`${editing ? 'Дежурство изменено' : 'Дежурство добавлено'}: ${name(personId)}`, { label: 'Вернуть', onClick: undo })
+    onClose()
+  }
+  const del = () => {
+    if (!editing) return
+    apply((l) => withSlots(l, (l.slots ?? []).filter((x) => x.id !== editing.id)))
+    toast(`Дежурство удалено: ${name(editing.personId)}`, { label: 'Вернуть', onClick: undo })
+    onClose()
+  }
+  const err = (k: keyof typeof errs) => (tried ? errs[k]?.message : undefined)
+  return (
+    <Modal title={editing ? 'Дежурство' : 'Новое дежурство'} onClose={onClose} wide>
+      <div ref={bodyRef} className="space-y-5" data-testid="slot-modal">
+        <p className="text-sm text-muted">Слой «<span className="text-ink">{layer.name}</span>» — ручной график, {tzLabel(tz)}.</p>
+        <Field label="Кто дежурит" error={err('person')}>
+          <PersonPicker testId="slot-person" people={state.people} teamFirst={teamFirst} teamLabel="Команда календаря" value={personId} onChange={setPersonId} />
+        </Field>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="С" error={err('start')}>
+            <input data-testid="slot-start" type="datetime-local" step={3600} className={inputCls} value={start} onChange={(e) => setStart(e.target.value)} />
+          </Field>
+          <Field label="По" error={err('end')}>
+            <input data-testid="slot-end" type="datetime-local" step={3600} className={inputCls} value={end} onChange={(e) => setEnd(e.target.value)} />
+          </Field>
+        </div>
+        {!Object.keys(errs).length && <p className="text-sm text-muted">Длительность: {fmtDur(eT - sT)}</p>}
+        <Field label="Комментарий" hint="Необязательно">
+          <input className={inputCls} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Например: за Ивана, он в отпуске" />
+        </Field>
+        {warn && <p role="status" data-testid="slot-overlap" className="tint-warn rounded-lg px-3 py-2 text-sm">{warn}. Можно сохранить, если так и задумано.</p>}
+        {tried && <FormErrors missing={Object.values(errs).map((e) => e!.label)} />}
+      </div>
+      <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
+        <div>{editing && <Btn variant="danger" data-testid="slot-delete" onClick={del}>Удалить</Btn>}</div>
+        <div className="flex gap-2">
+          <Btn variant="ghost" onClick={onClose}>Отмена</Btn>
+          <Btn data-testid="slot-save" onClick={save}>{editing ? 'Сохранить' : 'Добавить'}</Btn>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/** «Повторить неделю на N недель» для слоя с ручным графиком. */
+export function RepeatWeekModal({ c, layerId, ws, onClose }: { c: Calendar; layerId: string; ws: number; onClose: () => void }) {
+  const { updateCalendar, toast } = useStore()
+  const tz = c.timezone || DEFAULT_TZ
+  const [n, setN] = useState(4)
+  const layer = c.layers.find((l) => l.id === layerId)
+  if (!layer) return null
+  const we = addDays(ws, 7, tz)
+  const count = manualSlots(layer).filter((x) => x.start >= ws && x.start < we).length
+  const ok = n >= 1 && n <= 26
+  const run = () => {
+    if (!ok) return
+    const before = layer.slots ?? []
+    let added = 0
+    updateCalendar(c.id, (cal) => ({ ...cal, layers: cal.layers.map((l) => { if (l.id !== layerId) return l; const r = repeatSlots(l, ws, we, n, tz); added = r.added; return r.layer }) }))
+    toast(added ? `Неделя повторена на ${n} нед.: +${added} дежурств` : 'Всё уже есть — нечего добавлять', { label: 'Вернуть', onClick: () => updateCalendar(c.id, (cal) => ({ ...cal, layers: cal.layers.map((l) => (l.id === layerId ? withSlots(l, before) : l)) })) })
+    onClose()
+  }
+  return (
+    <Modal title="Повторить неделю" onClose={onClose}>
+      <div className="space-y-4 text-sm">
+        <p className="text-muted">Слой «<span className="text-ink">{layer.name}</span>»: {count} дежурств недели {fmtDT(ws, tz).split(',')[0]} – {fmtDT(addDays(ws, 6, tz), tz).split(',')[0]} повторятся на следующие недели. Совпадающие дежурства не дублируются.</p>
+        <Field label="Сколько недель" error={ok ? undefined : 'От 1 до 26'}>
+          <input data-testid="repeat-weeks" type="number" min={1} max={26} className={`${inlineCls} w-24`} value={n} onChange={(e) => setN(Math.floor(Number(e.target.value)))} />
+        </Field>
+      </div>
+      <div className="mt-6 flex justify-end gap-2">
+        <Btn variant="ghost" onClick={onClose}>Отмена</Btn>
+        <Btn data-testid="repeat-run" onClick={run} disabled={!ok || !count}>Повторить</Btn>
       </div>
     </Modal>
   )

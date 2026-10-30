@@ -6,8 +6,7 @@ import { useFavorites } from '../favorites'
 import { calendarOrgUnit, EMPTY_FILTER, filterCalendars, type CalFilter } from '../search'
 import { peopleById, useNow, useStore } from '../store'
 import { DEFAULT_TZ, fmtTz, tzLabel } from '../tz'
-import { TYPE_META } from '../ui'
-import type { Calendar, CalendarType } from '../types'
+import type { Calendar } from '../types'
 
 /** До стольких календарей дашборд показывает все карточки сразу, как раньше. */
 export const FEW_CALENDARS = 8
@@ -25,7 +24,6 @@ export function Dashboard() {
   const me = peopleById(state.people).get(state.currentUserId!)!
   const { favorites, isFav, toggle } = useFavorites(me.id)
   const few = state.calendars.length <= FEW_CALENDARS
-  const [type, setType] = useState<CalendarType | 'all'>('all')
   const [f, setF] = useState<CalFilter>(EMPTY_FILTER)
   const [page, setPage] = useState(0)
   const [showAllMine, setShowAllMine] = useState(false)
@@ -74,7 +72,7 @@ export function Dashboard() {
     : weekGaps?.length ? { label: weekGaps.length <= 3 && few ? null : 'Показать', on: () => showGaps('week') } : null
 
   // маленький набор: все карточки, как раньше
-  const smallRows = few ? state.calendars.filter((c) => (type === 'all' || c.type === type) && (f.coverage === 'all' || (f.coverage === 'now' ? onCallAt(c, now).length === 0 : hasWeekGap(c, now)))) : []
+  const smallRows = few ? state.calendars.filter((c) => (f.coverage === 'all' || (f.coverage === 'now' ? onCallAt(c, now).length === 0 : hasWeekGap(c, now)))) : []
 
   return (
     <div className="space-y-10">
@@ -94,17 +92,12 @@ export function Dashboard() {
       {few ? (
         <section ref={listRef} className="space-y-6">
           <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
-            {(['all', 'sitcenter', 'monitoring', 'product', 'infra'] as const).map((t) => (
-              <button key={t} aria-pressed={type === t} onClick={() => setType(t)} className={type === t ? 'font-medium text-ink' : 'text-muted hover:text-ink'}>
-                {t === 'all' ? 'Все' : TYPE_META[t].label}
+            {([['all', 'Все'], ['now', 'Без дежурного сейчас'], ['week', 'С дырами за 7 дней']] as const).map(([k, label]) => (
+              <button key={k} data-testid={`cov-${k}`} aria-pressed={f.coverage === k} onClick={() => setFilter({ ...f, coverage: k })} className={f.coverage === k ? 'font-medium text-ink' : 'text-muted hover:text-ink'}>
+                {label}
               </button>
             ))}
-            {f.coverage !== 'all' && (
-              <span data-testid="gaps-chip" className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-2.5 py-0.5 text-xs text-ink">
-                {f.coverage === 'now' ? 'Только без дежурного' : 'Только с дырами за 7 дней'}
-                <button type="button" aria-label="Сбросить фильтр покрытия" className="text-muted hover:text-ink" onClick={() => setFilter(EMPTY_FILTER)}>×</button>
-              </span>
-            )}
+            {f.coverage !== 'all' && <span data-testid="gaps-chip" className="sr-only">{f.coverage === 'now' ? 'Только без дежурного' : 'Только с дырами за 7 дней'}</span>}
           </div>
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
             {smallRows.map((c) => <OnCallCard key={c.id} c={c} now={now} fav={isFav(c.id)} onFav={() => toggle(c.id)} />)}

@@ -1,24 +1,15 @@
 import { cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { PEOPLE } from './data'
-import type { Calendar, CalendarType, LayerKind, Person } from './types'
+import type { Calendar, LayerKind, Person } from './types'
 import { resolveChain } from './escalation'
 import { useStore } from './store'
 
-export { ESC_LABEL, resolveChain, type ChainLevel } from './escalation'
+export { ESC_LABEL, resolveChain, ruleLabel, type ChainLevel } from './escalation'
 
-export const TYPE_META: Record<CalendarType, { label: string; color: string; bg: string; icon: string }> = {
-  sitcenter: { label: 'Ситуационный центр', color: '#e5484d', bg: '#fee2e2', icon: '' },
-  monitoring: { label: 'Мониторинг', color: '#f0a04b', bg: '#fef3c7', icon: '' },
-  product: { label: 'Продукт', color: '#5e6ad2', bg: '#e0e7ff', icon: '' },
-  infra: { label: 'Инфраструктура', color: '#8b5cf6', bg: '#ede9fe', icon: '' },
-}
 export const KIND_META: Record<LayerKind | 'override' | 'oneoff', { label: string; color: string; bg: string; pattern?: boolean }> = {
   primary: { label: 'Основной', color: '#0f766e', bg: '#ccfbf1' },
   secondary: { label: 'Резерв', color: '#64748b', bg: '#e2e8f0' },
-  business: { label: 'Рабочие часы', color: '#0369a1', bg: '#e0f2fe' },
-  night: { label: 'Ночь и выходные', color: '#4f46e5', bg: '#e0e7ff' },
-  shadow: { label: 'Стажёр', color: '#a16207', bg: '#fef9c3' },
   oneoff: { label: 'Разовое', color: '#be185d', bg: '#fce7f3' },
   override: { label: 'Подмена', color: '#be185d', bg: '#fce7f3', pattern: true },
 }
@@ -55,7 +46,6 @@ export function Avatar({ p, size = 28 }: { p?: Person; size?: number }) {
 export function Badge({ children, color, bg, className = '' }: { children: ReactNode; color: string; bg: string; className?: string }) {
   return <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs whitespace-nowrap ${className}`} style={{ color, background: bg }}>{children}</span>
 }
-export const TypeBadge = ({ t }: { t: CalendarType }) => <Badge color={TYPE_META[t].color} bg={TYPE_META[t].bg}>{TYPE_META[t].label}</Badge>
 export const KindBadge = ({ k }: { k: string }) => {
   const m = KIND_META[k as LayerKind] ?? KIND_META.override
   return <Badge color={m.color} bg={m.bg}>{m.label}</Badge>
@@ -69,8 +59,8 @@ export function Card({ children, className = '' }: { children: ReactNode; classN
   return <div className={`rounded-xl border border-line bg-surface shadow-card ${className}`}>{children}</div>
 }
 
-export function Btn({ children, onClick, variant = 'primary', className = '', type = 'button', disabled, title }: {
-  children: ReactNode; onClick?: () => void; variant?: 'primary' | 'ghost' | 'danger' | 'soft'; className?: string; type?: 'button' | 'submit'; disabled?: boolean; title?: string
+export function Btn({ children, onClick, variant = 'primary', className = '', type = 'button', disabled, title, 'data-testid': testId }: {
+  children: ReactNode; onClick?: () => void; variant?: 'primary' | 'ghost' | 'danger' | 'soft'; className?: string; type?: 'button' | 'submit'; disabled?: boolean; title?: string; 'data-testid'?: string
 }) {
   const v = {
     primary: 'bg-accent text-white hover:bg-accent-2',
@@ -78,7 +68,7 @@ export function Btn({ children, onClick, variant = 'primary', className = '', ty
     ghost: 'bg-transparent text-ink hover:bg-surface-2',
     danger: 'bg-transparent text-danger hover:bg-danger/10',
   }[variant]
-  return <button type={type} title={title} disabled={disabled} onClick={onClick} className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium disabled:opacity-40 ${v} ${className}`}>{children}</button>
+  return <button type={type} title={title} disabled={disabled} data-testid={testId} onClick={onClick} className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium disabled:opacity-40 ${v} ${className}`}>{children}</button>
 }
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
@@ -172,6 +162,23 @@ export function Field({ label, children, hint, error }: { label: string; childre
     </div>
   )
 }
+/** Сводка незаполненных полей формы: «Заполните: название, лид». */
+export function FormErrors({ missing }: { missing: string[] }) {
+  if (!missing.length) return null
+  return <div role="alert" data-testid="form-errors" className="tint-danger rounded-lg px-3 py-2 text-sm">Заполните: {missing.join(', ')}</div>
+}
+/** Фокус на первое невалидное поле внутри контейнера (после отрисовки ошибок). */
+export function focusFirstInvalid(root: HTMLElement | null) {
+  requestAnimationFrame(() => {
+    const el = root?.querySelector<HTMLElement>('[aria-invalid="true"], [data-invalid="true"]')
+    // выпадающий список при программном фокусе не раскрываем — он закроет поле с ошибкой
+    if (el?.getAttribute('role') === 'combobox') el.dataset.quietFocus = '1'
+    el?.focus()
+    el?.scrollIntoView?.({ block: 'nearest' })
+  })
+}
+/** Поле без w-full: ширину задаёт соседний класс (w-16, w-56…). */
+export const inlineCls = 'rounded-lg border border-line-strong bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20'
 export const inputCls = 'w-full rounded-lg border border-line-strong bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20'
 
 export function Empty({ title, text, action }: { title: string; text?: string; action?: ReactNode }) {
@@ -197,11 +204,11 @@ export function Menu({ label = 'Ещё', items }: { label?: string; items: { lab
   }, [open])
   return (
     <div ref={ref} className="relative">
-      <button type="button" aria-label={label} aria-expanded={open} onClick={() => setOpen((v) => !v)} className="rounded-md px-2 py-1 text-sm tracking-widest text-faint hover:bg-surface-2 hover:text-ink">···</button>
+      <button type="button" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)} className="rounded-md px-2 py-1 text-sm tracking-widest text-faint hover:bg-surface-2 hover:text-ink">···</button>
       {open && (
-        <div className="popover-in absolute right-0 z-30 mt-1 min-w-44 rounded-lg border border-line bg-surface p-1 shadow-card">
+        <div role="menu" aria-label={label} className="popover-in absolute right-0 z-30 mt-1 min-w-44 rounded-lg border border-line bg-surface p-1 shadow-card">
           {items.map((it) => (
-            <button key={it.label} type="button" disabled={it.disabled} onClick={() => { setOpen(false); it.onClick() }} className={`block w-full rounded-md px-2.5 py-1.5 text-left text-sm hover:bg-surface-2 disabled:opacity-40 ${it.danger ? 'text-danger' : 'text-ink'}`}>{it.label}</button>
+            <button key={it.label} type="button" role="menuitem" disabled={it.disabled} onClick={() => { setOpen(false); it.onClick() }} className={`block w-full rounded-md px-2.5 py-1.5 text-left text-sm hover:bg-surface-2 disabled:opacity-40 ${it.danger ? 'text-danger' : 'text-ink'}`}>{it.label}</button>
           ))}
         </div>
       )}
@@ -234,7 +241,7 @@ export function ScheduleLegend() {
   return (
     <div data-testid="schedule-legend" className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-muted">
       <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-4 rounded-sm" style={{ background: '#2563eb' }} />цвет — человек</span>
-      <span className="inline-flex items-center gap-1.5"><span className="h-3 w-5 rounded-sm" style={{ background: '#2563eb', ...SUBST_STYLE }} />штриховка с пунктиром — подмена</span>
+      <span className="inline-flex items-center gap-1.5"><span className="h-3 w-5 rounded-sm" style={{ background: '#2563eb', ...SUBST_STYLE }} />штриховка с пунктиром — подмена: стоит на месте заменяемого</span>
       <span className="inline-flex items-center gap-1.5"><span className="relative inline-flex h-3 w-5 items-center justify-center rounded-sm text-[9px] font-bold text-warn" style={CONFLICT_STYLE}>!</span>оранжевая рамка с «!» — конфликт: две смены одного человека сразу</span>
       <span className="inline-flex items-center gap-1.5"><span className="h-3 w-5 rounded-sm text-[8px] leading-3 text-muted line-through" style={REMOVED_STYLE} />серая зачёркнутая — снят с дежурства</span>
       <span className="inline-flex items-center gap-1.5"><span className="gap-band h-2.5 w-4 rounded-sm" />розовое «Нет дежурного» — никто не назначен</span>
@@ -294,11 +301,6 @@ export function barRect(el: Element) {
 export function Legend() {
   return (
     <div className="space-y-3 text-sm">
-      <div className="flex flex-wrap gap-x-5 gap-y-2">
-        {(Object.keys(TYPE_META) as CalendarType[]).map((t) => (
-          <span key={t} className="inline-flex items-center gap-2 text-muted"><span className="h-2 w-2 rounded-full" style={{ background: TYPE_META[t].color }} />{TYPE_META[t].label}</span>
-        ))}
-      </div>
       <div className="flex flex-wrap gap-x-5 gap-y-2">
         {Object.entries(KIND_META).map(([k, m]) => (
           <span key={k} className="inline-flex items-center gap-2 text-muted"><span className="h-2 w-2 rounded-full" style={{ background: m.color }} />{m.label}</span>

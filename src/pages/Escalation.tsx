@@ -42,7 +42,7 @@ export function Escalation() {
     let i = 0
     const total = chain.length * cycles
     const tick = () => {
-      if (i >= total) { setEvents((e) => [...e, { t: lastT.current, text: 'Цепочка исчерпана — инцидент остался без подтверждения. Оповещение руководству СЦ.', kind: 'end' }]); setRunning(false); return }
+      if (i >= total) { setEvents((e) => [...e, { t: lastT.current, text: 'Цепочка исчерпана — инцидент остался без подтверждения.', kind: 'end' }]); setRunning(false); return }
       const lv = chain[i % chain.length]
       const cycle = Math.floor(i / chain.length) + 1
       const at = (cycle - 1) * cycleMin + lv.delayMin
