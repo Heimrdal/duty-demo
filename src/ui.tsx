@@ -231,7 +231,8 @@ export function ScheduleLegend() {
   )
 }
 
-export interface BarInfo { title: string; lines: string[]; rect: { left: number; top: number; bottom: number } }
+export interface BarAction { label: string; onClick: () => void; danger?: boolean }
+export interface BarInfo { title: string; lines: string[]; rect: { left: number; top: number; bottom: number }; actions?: BarAction[] }
 
 /** Карточка смены по клику или фокусу на полосе таймлайна. */
 export function BarCard({ info, onClose }: { info: BarInfo; onClose: () => void }) {
@@ -244,12 +245,21 @@ export function BarCard({ info, onClose }: { info: BarInfo; onClose: () => void 
     window.addEventListener('pointerdown', down, true)
     return () => { window.removeEventListener('keydown', key); window.removeEventListener('pointerdown', down, true) }
   }, [])
-  const below = info.rect.bottom + 190 < window.innerHeight
+  const acts = info.actions ?? []
+  const h = 190 + (acts.length ? 44 : 0)
+  const below = info.rect.bottom + h < window.innerHeight
   return createPortal(
-    <div data-bar-card role="status" data-testid="bar-card" className="popover-in fixed z-50 w-72 rounded-lg border border-line bg-surface px-3 py-2.5 text-sm shadow-card"
-      style={{ left: Math.max(8, Math.min(info.rect.left, window.innerWidth - 300)), top: below ? info.rect.bottom + 6 : Math.max(8, info.rect.top - 196) }}>
+    <div data-bar-card role={acts.length ? 'group' : 'status'} aria-label={acts.length ? `Смена: ${info.title}` : undefined} data-testid="bar-card" className="popover-in fixed z-50 w-72 rounded-lg border border-line bg-surface px-3 py-2.5 text-sm shadow-card"
+      style={{ left: Math.max(8, Math.min(info.rect.left, window.innerWidth - 300)), top: below ? info.rect.bottom + 6 : Math.max(8, info.rect.top - h - 6) }}>
       <div className="font-medium">{info.title}</div>
       {info.lines.map((l) => <div key={l} className="mt-0.5 text-muted">{l}</div>)}
+      {acts.length > 0 && (
+        <div className="mt-2.5 flex flex-wrap gap-1 border-t border-line pt-2">
+          {acts.map((a) => (
+            <button key={a.label} type="button" onClick={() => { onClose(); a.onClick() }} className={`rounded-md px-2 py-1 text-xs font-medium hover:bg-surface-2 ${a.danger ? 'text-danger' : 'text-accent'}`}>{a.label}</button>
+          ))}
+        </div>
+      )}
     </div>,
     document.body,
   )

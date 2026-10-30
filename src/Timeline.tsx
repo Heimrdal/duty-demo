@@ -2,12 +2,15 @@ import { useMemo, useState } from 'react'
 import { addDays, calendarOnCall, fmtDT, fmtDur, HOUR, layerSlot, sampleSegments, startOfDay, weekday, type Segment } from './engine'
 import { useStore } from './store'
 import { fmtTz, tzName, zparts } from './tz'
-import { barRect, BarCard, KIND_META, personColor, shortName, SUBST_STYLE, type BarInfo } from './ui'
-import type { Calendar } from './types'
+import { barRect, BarCard, KIND_META, personColor, shortName, SUBST_STYLE, type BarAction, type BarInfo } from './ui'
+import type { Calendar, Shift } from './types'
 
-interface Lane { key: string; label: string; sub?: string; kind: string; segs: Segment[]; final?: boolean }
+/** Что знает таймлайн о смене, по которой кликнули: для действий лида. */
+export interface BarTarget { personId: string; start: number; end: number; shift?: Shift }
 
-export function Timeline({ c, from, days, now }: { c: Calendar; from: number; days: number; now: number }) {
+interface Lane { key: string; label: string; sub?: string; kind: string; segs: (Segment & { shiftId?: string })[]; final?: boolean }
+
+export function Timeline({ c, from, days, now, actions }: { c: Calendar; from: number; days: number; now: number; actions?: (t: BarTarget) => BarAction[] }) {
   const { state } = useStore()
   const tz = c.timezone
   const [info, setInfo] = useState<BarInfo | null>(null)
@@ -26,7 +29,7 @@ export function Timeline({ c, from, days, now }: { c: Calendar; from: number; da
     if (c.shifts.length) {
       out.push({
         key: 'shifts', label: 'Разовые и подмены', kind: 'override',
-        segs: c.shifts.map((s) => ({ start: Math.max(a, +new Date(s.start)), end: Math.min(b, +new Date(s.end)), personId: s.personId, extra: s.note, hatch: !!s.replacesPersonId })).filter((s) => s.end > s.start),
+        segs: c.shifts.map((s) => ({ start: Math.max(a, +new Date(s.start)), end: Math.min(b, +new Date(s.end)), personId: s.personId, extra: s.note, hatch: !!s.replacesPersonId, shiftId: s.id })).filter((s) => s.end > s.start),
       })
     }
     // итоговые дорожки: человек остаётся на своей дорожке, пока дежурит (стабильная раскладка)
@@ -107,18 +110,19 @@ export function Timeline({ c, from, days, now }: { c: Calendar; from: number; da
                 const label = p ? shortName(p.name) : ''
                 const layerName = ln.final ? 'Итог' : ln.key === 'shifts' ? (s.hatch ? 'Подмена' : 'Разовое') : c.layers.find((x) => ln.key.startsWith(x.id))?.name ?? ln.label
                 const lines = [
-                  `${c.name} · ${s.hatch ? `${layerName}, подмена` : layerName}`,
+                  `${c.name} · ${s.hatch && ln.key !== 'shifts' ? `${layerName}, подмена` : layerName}`,
                   `${fmtDT(s.start, tz)} — ${fmtDT(s.end, tz)} · ${fmtDur(s.end - s.start)}`,
                   `Часовой пояс: ${tzName(tz)}`,
                   ...(s.extra ? [s.extra] : []),
                 ]
-                const open = (el: Element) => p && setInfo({ title: p.name, lines, rect: barRect(el) })
+                const shift = s.shiftId ? c.shifts.find((x) => x.id === s.shiftId) : ln.final ? c.shifts.find((x) => x.personId === s.personId && +new Date(x.start) <= s.start + 1 && s.start < +new Date(x.end)) : undefined
+                const open = (el: Element) => p && setInfo({ title: p.name, lines, rect: barRect(el), actions: actions?.({ personId: s.personId, start: s.start, end: s.end, shift }) })
                 return (
                   <div key={i} data-bar role="button" tabIndex={0}
                     aria-label={p ? `${p.name}, ${lines.join(', ')}` : undefined}
                     onClick={(e) => open(e.currentTarget)}
                     onFocus={(e) => open(e.currentTarget)}
-                    onBlur={() => setInfo(null)}
+                    onBlur={(e) => { if (!(e.relatedTarget as HTMLElement | null)?.closest?.('[data-bar-card]')) setInfo(null) }}
                     className="absolute top-1 bottom-1 cursor-pointer overflow-hidden rounded-md px-1 text-[10px] leading-7 font-medium whitespace-nowrap text-white focus-visible:ring-2 focus-visible:ring-ink"
                     style={{
                       left: `${left}%`, width: `calc(${width}% - 2px)`, background: col,

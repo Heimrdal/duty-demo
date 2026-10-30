@@ -5,6 +5,12 @@ import { Avatar } from '../ui'
 export function Login() {
   const { state, update } = useStore()
   const [stage, setStage] = useState<'start' | 'idp' | 'redirect'>('start')
+  // Кто какой календарь ведёт: лидов легко перепутать по должности, поэтому роль видна прямо в списке.
+  const roleOf = (id: string) => {
+    const lead = state.calendars.filter((c) => c.leadId === id).map((c) => c.name)
+    const owner = state.calendars.filter((c) => c.ownerId === id && c.leadId !== id).map((c) => c.name)
+    return [lead.length ? `лид: ${lead.join(', ')}` : '', owner.length ? `владелец: ${owner.join(', ')}` : ''].filter(Boolean).join(' · ')
+  }
   const login = (id: string) => {
     setStage('redirect')
     setTimeout(() => { update((s) => ({ ...s, currentUserId: id })); location.hash = '#/' }, 700)
@@ -33,6 +39,7 @@ export function Login() {
                 <button key={p.id} onClick={() => login(p.id)} className="flex w-full items-center gap-3 px-5 py-2.5 text-left hover:bg-surface-2">
                   <Avatar p={p} />
                   <div className="min-w-0 flex-1"><div className="truncate text-sm font-medium">{p.name}</div><div className="truncate text-xs text-muted">{p.title}</div></div>
+                  {roleOf(p.id) && <span data-testid="login-role" className="max-w-[45%] shrink-0 truncate rounded-full bg-accent-soft px-2 py-0.5 text-[11px] text-accent" title={roleOf(p.id)}>{roleOf(p.id)}</span>}
                 </button>
               ))}
             </div>

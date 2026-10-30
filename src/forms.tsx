@@ -1,9 +1,10 @@
 import { useId, useMemo, useState } from 'react'
-import { addDays, calendarOnCall, describePattern, fmtDT, fmtDur, isoDate, layerBoundary, layerOnCall, rotationLabel, startOfDay, uid, weekday } from './engine'
+import { addDays, calendarOnCall, describePattern, fmtDT, fmtDur, HOUR, hm, isoDate, layerBoundary, layerOnCall, rotationLabel, startOfDay, uid, weekday } from './engine'
+import { makeShift, teamFirstIds, upsertShift } from './perm'
 import { useStore } from './store'
 import { atDay, dayNumber, DEFAULT_TZ, fromInputTz, toInputTz, tzLabel } from './tz'
-import { Avatar, Btn, Field, inputCls, KIND_META, KindMark, Modal } from './ui'
-import type { Calendar, Layer, LayerKind, Restriction } from './types'
+import { Avatar, Btn, Field, inputCls, KIND_META, KindMark, LeadSelect, Modal } from './ui'
+import type { Calendar, Layer, LayerKind, Restriction, Shift } from './types'
 
 const mondayOf = (t: number, tz: string) => { const x = startOfDay(t, tz); return addDays(x, -weekday(x, tz), tz) }
 const atHour = (dayStart: number, h: number, tz: string) => atDay(dayNumber(dayStart, tz), h * 60, tz)
@@ -371,6 +372,118 @@ export function LayerWizard({ c, layer, onClose }: { c: Calendar; layer?: Layer;
       <div className="mt-8 flex justify-between">
         <Btn variant="ghost" onClick={() => (step ? setStep(step - 1) : onClose())}>{step ? 'Назад' : 'Отмена'}</Btn>
         {step < steps.length - 1 ? <Btn disabled={!okStep} onClick={() => setStep(step + 1)}>Далее</Btn> : <Btn onClick={save}>Сохранить слой</Btn>}
+      </div>
+    </Modal>
+  )
+}
+
+/* ---------------- «Назначить дежурство» (лид и руководитель) ---------------- */
+export interface AssignInit {
+  /** редактируем существующую смену */
+  shift?: Shift
+  personId?: string
+  replacesPersonId?: string
+  start?: number
+  end?: number
+}
+
+const ceil5 = (t: number) => Math.ceil(t / 300_000) * 300_000
+
+export function AssignDutyModal({ c, init, onClose }: { c: Calendar; init?: AssignInit; onClose: () => void }) {
+  const { state, updateCalendar, sendTg, toast } = useStore()
+  const me = state.people.find((p) => p.id === state.currentUserId)
+  const tz = c.timezone || DEFAULT_TZ
+  const zl = tzLabel(tz)
+  const uidBase = useId()
+  const errId = `${uidBase}-err`
+  const editing = init?.shift
+  const defaults = useMemo(() => {
+    const now = Date.now()
+    if (editing) return { s: +new Date(editing.start), e: +new Date(editing.end) }
+    if (init?.start != null && init?.end != null) {
+      const s = Math.max(init.start, ceil5(now))
+      return { s, e: Math.max(init.end, s + HOUR) }
+    }
+    const tomorrow = addDays(startOfDay(now, tz), 1, tz)
+    const h = Math.floor(hm(c.layers[0]?.handoffTime ?? '10:00') / 60)
+    return { s: atHour(tomorrow, h, tz), e: atHour(addDays(tomorrow, 1, tz), h, tz) }
+  }, [editing, init?.start, init?.end, tz, c.layers])
+  const [personId, setPersonId] = useState(editing?.personId ?? init?.personId ?? '')
+  const [start, setStart] = useState(toInputTz(defaults.s, tz))
+  const [end, setEnd] = useState(toInputTz(defaults.e, tz))
+  const initReplaces = editing ? editing.replacesPersonId ?? '' : init?.replacesPersonId ?? ''
+  const [mode, setMode] = useState<'add' | 'replace'>(initReplaces ? 'replace' : 'add')
+  const [replaces, setReplaces] = useState(initReplaces)
+  const [note, setNote] = useState(editing?.note ?? '')
+  const sT = fromInputTz(start, tz)
+  const eT = fromInputTz(end, tz)
+  const empty = Number.isNaN(sT) || Number.isNaN(eT)
+  // уже идущую смену можно править: проверяем только окончание
+  const inPast = !empty && (editing ? eT <= Date.now() : sT < Date.now() - 5 * 60_000)
+  const onCall = !empty ? calendarOnCall({ ...c, shifts: c.shifts.filter((x) => x.id !== editing?.id) }, Math.max(sT, Date.now()) + 1) : []
+  const replaceOptions = [...new Set([...onCall.map((e) => e.personId), ...(initReplaces ? [initReplaces] : [])])].filter((id) => id !== personId)
+  const error = !personId ? 'Выберите, кто дежурит' : empty ? 'Укажите начало и окончание' : eT <= sT ? 'Окончание раньше начала' : inPast ? 'Интервал уже прошёл — выберите будущее время' : mode === 'replace' && !replaces ? 'Выберите, кого заменить' : ''
+  const valid = !error
+  const name = (id?: string) => state.people.find((p) => p.id === id)?.name ?? ''
+
+  const submit = () => {
+    if (!valid) return
+    const fresh = makeShift({ personId, start: sT, end: eT, replacesPersonId: mode === 'replace' ? replaces : undefined, note: note || (mode === 'replace' ? `Замена: ${name(replaces)}` : 'Назначено лидом') })
+    const shift = editing ? { ...fresh, id: editing.id, createdAt: editing.createdAt } : fresh
+    updateCalendar(c.id, (cal) => upsertShift(cal, shift))
+    const when = `С ${fmtDT(sT, tz)} по ${fmtDT(eT, tz)} ${zl} (${fmtDur(eT - sT)})`
+    sendTg({ toPersonId: personId, calendarId: c.id, kind: 'signup', text: `📅 ${editing ? 'Ваше дежурство изменено' : 'Вас назначили на дежурство'}\nКалендарь: «${c.name}»\n${when}${mode === 'replace' ? `\nВместо: ${name(replaces)}` : ''}\nНазначил(а): ${me?.name ?? ''}` })
+    if (mode === 'replace' && replaces) sendTg({ toPersonId: replaces, calendarId: c.id, kind: 'handover', text: `🔁 Вас заменяет ${name(personId)}\nКалендарь: «${c.name}»\n${when} — в это время алерты вам не придут.` })
+    if (editing) {
+      toast(`Смена обновлена: ${name(personId)}`, { label: 'Вернуть', onClick: () => updateCalendar(c.id, (cal) => upsertShift(cal, editing)) })
+    } else {
+      toast(`${name(personId)} ${mode === 'replace' ? `заменяет ${name(replaces)}` : 'назначен(а) на дежурство'}`, { label: 'Вернуть', onClick: () => updateCalendar(c.id, (cal) => ({ ...cal, shifts: cal.shifts.filter((x) => x.id !== shift.id) })) })
+    }
+    onClose()
+  }
+
+  return (
+    <Modal title={editing ? 'Изменить смену' : mode === 'replace' && init?.replacesPersonId ? 'Заменить дежурного' : 'Назначить дежурство'} onClose={onClose} wide>
+      <div className="space-y-6">
+        <p className="text-sm text-muted">Календарь «<span className="text-ink">{c.name}</span>». Человек получит уведомление в Telegram.</p>
+        <Field label="Кто дежурит">
+          <LeadSelect testId="assign-person" people={state.people} teamFirst={teamFirstIds(c, state.people)} value={personId} onChange={setPersonId} />
+        </Field>
+        <Field label="Как">
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            <button type="button" aria-pressed={mode === 'add'} onClick={() => setMode('add')} className={`rounded-lg border px-3 py-2 text-left ${mode === 'add' ? 'border-accent bg-accent-soft' : 'border-line'}`}>
+              <span className="font-medium">Разово</span><div className="text-xs text-muted">в дополнение к ротации</div>
+            </button>
+            <button type="button" aria-pressed={mode === 'replace'} onClick={() => setMode('replace')} className={`rounded-lg border px-3 py-2 text-left ${mode === 'replace' ? 'border-accent bg-accent-soft' : 'border-line'}`}>
+              <span className="font-medium">Вместо дежурного</span><div className="text-xs text-muted">замена поверх смены</div>
+            </button>
+          </div>
+        </Field>
+        {mode === 'replace' && (
+          <Field label="Кого заменить">
+            <select data-testid="assign-replaces" className={inputCls} value={replaces} onChange={(e) => setReplaces(e.target.value)}>
+              <option value="">Выберите</option>
+              {replaceOptions.map((id) => <option key={id} value={id}>{name(id)}</option>)}
+            </select>
+          </Field>
+        )}
+        <Field label="Когда">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label htmlFor={`${uidBase}-start`} className="mb-1 block text-xs text-muted">Начало, {zl}</label>
+              <input id={`${uidBase}-start`} type="datetime-local" className={inputCls} value={start} onChange={(e) => setStart(e.target.value)} aria-describedby={error ? errId : undefined} />
+            </div>
+            <div>
+              <label htmlFor={`${uidBase}-end`} className="mb-1 block text-xs text-muted">Окончание, {zl}</label>
+              <input id={`${uidBase}-end`} type="datetime-local" className={inputCls} value={end} onChange={(e) => setEnd(e.target.value)} aria-describedby={error ? errId : undefined} />
+            </div>
+          </div>
+        </Field>
+        <Field label="Комментарий"><input className={inputCls} value={note} onChange={(e) => setNote(e.target.value)} placeholder="например: отпуск, больничный, релиз" /></Field>
+        <div className="flex items-center justify-between gap-4 pt-2">
+          <div className="text-sm text-muted">{error ? <span id={errId} role="alert" className="text-danger">{error}</span> : <>{mode === 'replace' ? 'Замена' : 'Разовое'} · {fmtDur(eT - sT)} · с {fmtDT(sT, tz)} {zl}</>}</div>
+          <div className="flex gap-2"><Btn variant="ghost" onClick={onClose}>Отмена</Btn><Btn onClick={submit} disabled={!valid}>{editing ? 'Сохранить' : 'Назначить'}</Btn></div>
+        </div>
       </div>
     </Modal>
   )

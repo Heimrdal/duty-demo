@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import { initialState, migrateState } from './data'
 import { uid } from './engine'
+import { canEditSchedule } from './perm'
 import type { Calendar, State, TgMessage } from './types'
 
 const KEY = 'oncall-demo-state-v3' // ключ прежний: внутри version, миграция в migrateState
@@ -83,4 +84,17 @@ export function useNow(intervalMs = 30000) {
     return () => clearInterval(i)
   }, [intervalMs])
   return now
+}
+
+/** Права текущего пользователя на расписание календаря и подсказка, кто его ведёт. */
+export function useScheduleAccess(c: Calendar | undefined) {
+  const { state } = useStore()
+  const me = state.currentUserId
+  if (!c) return { canEdit: false, me, editorsLabel: '' }
+  const canEdit = canEditSchedule(c, state.people, me)
+  const name = (id: string) => state.people.find((p) => p.id === id)?.name
+  const lead = name(c.leadId)
+  const owner = c.ownerId !== c.leadId ? name(c.ownerId) : undefined
+  const editorsLabel = [lead && `лид ${lead}`, owner && `владелец ${owner}`].filter(Boolean).join(' и ')
+  return { canEdit, me, editorsLabel }
 }
