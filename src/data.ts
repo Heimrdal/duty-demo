@@ -1,8 +1,8 @@
 import { addDays, isoDate, startOfDay, uid } from './engine'
 import type { Calendar, NotifySettings, Person, State, TgMessage } from './types'
 
-const P = (id: string, name: string, title: string, team: string, managerId: string | undefined, tg: string, phone: string): Person => ({
-  id, name, title, team, managerId, telegram: '@' + tg, phone, email: `${tg.replace(/_/g, '.')}@bank.example`,
+const P = (id: string, name: string, title: string, orgUnit: string, managerId: string | undefined, tg: string, phone: string): Person => ({
+  id, name, title, orgUnit, teams: [orgUnit], managerId, telegram: '@' + tg, phone, email: `${tg.replace(/_/g, '.')}@bank.example`,
 })
 
 export const PEOPLE: Person[] = [
@@ -26,7 +26,7 @@ export const PEOPLE: Person[] = [
   P('u-sbp2', 'Олег Григорьев', 'Разработчик СБП', 'СБП', 'u-pay-lead', 'o_grigoriev', '+7 900 100-00-18'),
 ]
 
-const anchor = (daysAgo: number) => isoDate(addDays(startOfDay(new Date()), -(daysAgo + 56))) // ротации начались ~2 месяца назад
+const TZ = 'Europe/Moscow'
 const all = { type: 'none' as const, from: '00:00', to: '00:00', days: [] as number[] }
 const defaultEsc = () => [
   { id: uid(), target: 'oncall' as const, delayMin: 0 },
@@ -36,8 +36,10 @@ const defaultEsc = () => [
   { id: uid(), target: 'sitcenter' as const, delayMin: 20 },
 ]
 
-export function makeCalendars(): Calendar[] {
-  const today = startOfDay(new Date())
+/** Демо-календари. Даты считаются в зоне календаря (МСК), поэтому не зависят от часового пояса браузера. */
+export function makeCalendars(now: number = Date.now()): Calendar[] {
+  const today = startOfDay(now, TZ)
+  const anchor = (daysAgo: number) => isoDate(addDays(today, -(daysAgo + 56), TZ), TZ) // ротации начались ~2 месяца назад
   return [
     {
       id: 'cal-sc', name: 'Ситуационный центр', product: 'Ситуационный центр банка', type: 'sitcenter', team: 'Ситуационный центр',
@@ -91,7 +93,7 @@ export function makeCalendars(): Calendar[] {
         { id: 'l-sbp-weekend', name: 'Выходные — усиление', kind: 'night', startsAt: anchor(2), handoffTime: '10:00', rotation: { unit: 'week', count: 1 }, participants: ['u-pay2', 'u-ib1'], parallel: 1, restriction: { type: 'weekly', from: '00:00', to: '00:00', days: [5, 6] } },
       ],
       shifts: [
-        { id: uid(), personId: 'u-pay1', start: addDays(today, 2).toISOString(), end: addDays(today, 3).toISOString(), replacesPersonId: 'u-sbp2', note: 'Подмена: Олег в отпуске', createdAt: new Date().toISOString() },
+        { id: uid(), personId: 'u-pay1', start: new Date(addDays(today, 2, TZ)).toISOString(), end: new Date(addDays(today, 3, TZ)).toISOString(), replacesPersonId: 'u-sbp2', note: 'Подмена: Олег в отпуске', createdAt: new Date(now).toISOString() },
       ],
       escalation: defaultEsc(),
     },
@@ -104,8 +106,7 @@ export function makeNotify(): Record<string, NotifySettings> {
   return r
 }
 
-export function makeMessages(): TgMessage[] {
-  const now = Date.now()
+export function makeMessages(now: number = Date.now()): TgMessage[] {
   const m = (minAgo: number, to: string, kind: TgMessage['kind'], text: string, calendarId?: string): TgMessage => ({ id: uid(), ts: new Date(now - minAgo * 60000).toISOString(), toPersonId: to, kind, text, calendarId })
   return [
     m(600, 'u-sc1', 'shift_start', '🟢 Началось ваше дежурство\nКалендарь: «Ситуационный центр»\nСлой: Сменный инженер 24×7\nДо: завтра 09:00 МСК', 'cal-sc'),
@@ -115,6 +116,33 @@ export function makeMessages(): TgMessage[] {
   ]
 }
 
-export function initialState(): State {
-  return { version: 3, currentUserId: null, people: PEOPLE, calendars: makeCalendars(), notify: makeNotify(), messages: makeMessages() }
+export const STATE_VERSION = 4
+
+export function initialState(now: number = Date.now()): State {
+  return { version: STATE_VERSION, currentUserId: null, people: PEOPLE.map((p) => ({ ...p, teams: [...p.teams] })), calendars: makeCalendars(now), notify: makeNotify(), messages: makeMessages(now) }
+}
+
+type LegacyPerson = Omit<Person, 'orgUnit' | 'teams'> & { team?: string; orgUnit?: string; teams?: string[] }
+
+/** Миграция сохранённого состояния: v3 → v4 (явная зона календаря, оргструктура отдельно от дежурных команд, уровень 1 — дежурные). */
+export function migrateState(raw: unknown): State | null {
+  if (!raw || typeof raw !== 'object') return null
+  const s = raw as State & { version: number }
+  if (s.version !== 3 && s.version !== STATE_VERSION) return null
+  const people = (s.people as unknown as LegacyPerson[]).map(({ team, ...p }) => {
+    const orgUnit = p.orgUnit ?? team ?? ''
+    const teams = Array.isArray(p.teams) ? p.teams : orgUnit ? [orgUnit] : []
+    // v3 переносила сотрудника в чужую команду. Исходное подразделение берём из справочника.
+    const seed = PEOPLE.find((x) => x.id === p.id)
+    const fixedOrg = s.version === 3 && seed ? seed.orgUnit : orgUnit
+    const fixedTeams = [...new Set([...(s.version === 3 && seed ? [seed.orgUnit] : []), ...teams])]
+    return { ...p, orgUnit: fixedOrg, teams: fixedTeams } as Person
+  })
+  const calendars = s.calendars.map((c) => {
+    const escalation = c.escalation.length && c.escalation[0].target === 'oncall'
+      ? c.escalation
+      : [{ id: uid(), target: 'oncall' as const, delayMin: 0 }, ...c.escalation]
+    return { ...c, timezone: c.timezone || 'Europe/Moscow', escalation: escalation.map((x, i) => (i === 0 ? { ...x, delayMin: 0 } : x)) }
+  })
+  return { ...s, version: STATE_VERSION, people, calendars }
 }

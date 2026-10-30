@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import { TakeDutyModal } from './forms'
 import { About } from './pages/About'
 import { CalendarView } from './pages/CalendarView'
@@ -45,7 +46,7 @@ function safeDecode(s: string) {
 }
 
 export default function App() {
-  const { state, update, reset, toasts, toast } = useStore()
+  const { state, update, reset, toasts, toast, dismissToast } = useStore()
   const { theme, toggle } = useTheme()
   const [route] = useHashRoute()
   const [take, setTake] = useState(false)
@@ -57,7 +58,7 @@ export default function App() {
     case 'calendars': page = route[1] ? <CalendarView key={route[1]} id={route[1]} /> : <Calendars />; break
     case 'teams': page = <TeamView key={route[1] ?? ''} name={safeDecode(route[1] ?? '')} />; break
     case 'escalation': page = <Escalation />; break
-    case 'notifications': page = <Notifications />; break
+    case 'notifications': page = <Notifications key={route[1] ?? ''} incident={route[1] ? safeDecode(route[1]) : undefined} />; break
     case 'people': page = <People />; break
     case 'about': page = <About />; break
     default: page = <Dashboard />
@@ -69,11 +70,11 @@ export default function App() {
           <div className="text-sm font-semibold">Дежурства</div>
           <div className="mt-0.5 text-xs text-faint">Демо · ситуационный центр</div>
         </div>
-        <nav className="flex-1 space-y-0.5 px-2">
+        <nav aria-label="Разделы" className="flex-1 space-y-0.5 px-2">
           {NAV.map(([to, label], i) => {
             const active = (route[0] ?? '') === to
             return (
-              <a key={to || 'home'} href={`#/${to}`} className={`flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] ${active ? 'nav-active font-medium' : 'text-muted hover:bg-surface-2 hover:text-ink'}`}>
+              <a key={to || 'home'} href={`#/${to}`} aria-current={active ? 'page' : undefined} className={`flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] ${active ? 'nav-active font-medium' : 'text-muted hover:bg-surface-2 hover:text-ink'}`}>
                 <Icon d={ICONS[i]} />{label}
               </a>
             )
@@ -85,7 +86,7 @@ export default function App() {
             <Avatar p={me} size={28} />
             <div className="min-w-0 flex-1">
               <div className="truncate text-[13px] font-medium">{me.name}</div>
-              <div className="truncate text-xs text-faint">{me.team}</div>
+              <div className="truncate text-xs text-faint">{me.orgUnit}</div>
             </div>
             <Menu label="Аккаунт" items={[{ label: 'Сбросить данные', danger: true, onClick: () => { if (confirm('Сбросить демо-данные к исходным?')) { reset(); toast('Демо-данные сброшены') } } }]} />
           </div>
@@ -100,15 +101,23 @@ export default function App() {
           <span className="text-sm font-semibold">Дежурства</span>
           <div className="flex items-center gap-2">
             <button className="text-xs text-muted" aria-label={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'} onClick={toggle}>{theme === 'dark' ? 'Светлая' : 'Тёмная'}</button>
-            <select className="rounded-lg border border-line bg-surface px-2 py-1 text-sm" value={route[0] ?? ''} onChange={(e) => (location.hash = '#/' + e.target.value)}>{NAV.map(([to, l]) => <option key={to} value={to}>{l}</option>)}</select>
+            <select aria-label="Раздел" className="rounded-lg border border-line bg-surface px-2 py-1 text-sm" value={route[0] ?? ''} onChange={(e) => (location.hash = '#/' + e.target.value)}>{NAV.map(([to, l]) => <option key={to} value={to}>{l}</option>)}</select>
           </div>
         </header>
         <main className="rise mx-auto w-full max-w-[1180px] px-5 py-8 md:px-10 md:py-10">{page}</main>
       </div>
       {take && <TakeDutyModal onClose={() => setTake(false)} />}
-      <div className="fixed right-4 bottom-4 z-[60] space-y-2">
-        {toasts.map((t) => <div key={t.id} className="popover-in rounded-lg border border-line bg-surface px-4 py-2.5 text-sm shadow-card">{t.text}</div>)}
-      </div>
+      {createPortal(
+        <div role="status" aria-live="polite" className="fixed right-4 bottom-4 z-[60] space-y-2">
+          {toasts.map((t) => (
+            <div key={t.id} className="popover-in flex items-center gap-4 rounded-lg border border-line bg-surface px-4 py-2.5 text-sm shadow-card">
+              <span>{t.text}</span>
+              {t.action && <button type="button" className="font-medium text-accent hover:underline" onClick={() => { t.action!.onClick(); dismissToast(t.id) }}>{t.action.label}</button>}
+            </div>
+          ))}
+        </div>,
+        document.body,
+      )}
     </div>
   )
 }

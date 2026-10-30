@@ -1,15 +1,18 @@
-import { useMemo } from 'react'
-import { addDays, calendarOnCall, fmtDT, HOUR, layerSlot, sampleSegments, startOfDay, type Segment } from './engine'
+import { useMemo, useState } from 'react'
+import { addDays, calendarOnCall, fmtDT, fmtDur, HOUR, layerSlot, sampleSegments, startOfDay, weekday, type Segment } from './engine'
 import { useStore } from './store'
-import { KIND_META, personColor, shortName } from './ui'
+import { fmtTz, tzName, zparts } from './tz'
+import { barRect, BarCard, KIND_META, personColor, shortName, SUBST_STYLE, type BarInfo } from './ui'
 import type { Calendar } from './types'
 
 interface Lane { key: string; label: string; sub?: string; kind: string; segs: Segment[]; final?: boolean }
 
-export function Timeline({ c, from, days, now }: { c: Calendar; from: Date; days: number; now: number }) {
+export function Timeline({ c, from, days, now }: { c: Calendar; from: number; days: number; now: number }) {
   const { state } = useStore()
-  const a = from.getTime()
-  const b = addDays(from, days).getTime()
+  const tz = c.timezone
+  const [info, setInfo] = useState<BarInfo | null>(null)
+  const a = from
+  const b = addDays(from, days, tz)
   const span = b - a
   const step = days > 14 ? 2 * HOUR : HOUR
   const lanes = useMemo<Lane[]>(() => {
@@ -17,7 +20,7 @@ export function Timeline({ c, from, days, now }: { c: Calendar; from: Date; days
     for (const l of c.layers) {
       const k = Math.min(l.parallel, l.participants.length) || 1
       for (let i = 0; i < k; i++) {
-        out.push({ key: l.id + i, label: i === 0 ? l.name : '', sub: k > 1 ? `место ${i + 1} из ${k}` : undefined, kind: l.kind, segs: sampleSegments(a, b, (t) => layerSlot(l, t, i), step) })
+        out.push({ key: l.id + i, label: i === 0 ? l.name : '', sub: k > 1 ? `место ${i + 1} из ${k}` : undefined, kind: l.kind, segs: sampleSegments(a, b, (t) => layerSlot(l, t, i, tz), step) })
       }
     }
     if (c.shifts.length) {
@@ -46,7 +49,7 @@ export function Timeline({ c, from, days, now }: { c: Calendar; from: Date; days
     finalSegs.forEach((segs, i) => out.push({ key: 'final' + i, label: i === 0 ? 'ИТОГ: кому придёт алерт' : '', kind: 'final', final: true, segs }))
     if (!finalSegs.length) out.push({ key: 'final0', label: 'ИТОГ: кому придёт алерт', kind: 'final', final: true, segs: [] })
     return out
-  }, [c, a, b, step])
+  }, [c, a, b, step, tz])
 
   const gaps = useMemo(() => {
     const out: { start: number; end: number }[] = []
@@ -63,7 +66,8 @@ export function Timeline({ c, from, days, now }: { c: Calendar; from: Date; days
   }, [c, a, b, step])
 
   const byId = (id: string) => state.people.find((p) => p.id === id)
-  const dayList = Array.from({ length: days }, (_, i) => addDays(from, i))
+  const dayList = Array.from({ length: days }, (_, i) => addDays(from, i, tz))
+  const today = startOfDay(now, tz)
   const nowPct = ((now - a) / span) * 100
 
   return (
@@ -73,10 +77,10 @@ export function Timeline({ c, from, days, now }: { c: Calendar; from: Date; days
           <div className="w-52 shrink-0 px-3 py-2 font-medium">Слой</div>
           <div className="relative flex flex-1">
             {dayList.map((d, i) => {
-              const we = d.getDay() === 0 || d.getDay() === 6
+              const we = weekday(d, tz) >= 5
               return (
-                <div key={i} className={`flex-1 border-l border-line px-1 py-1 text-center ${we ? 'weekend' : ''} ${startOfDay(now).getTime() === d.getTime() ? 'font-medium text-accent' : ''}`}>
-                  {d.toLocaleDateString('ru-RU', { weekday: 'short' })}<br />{d.getDate()}.{String(d.getMonth() + 1).padStart(2, '0')}
+                <div key={i} className={`flex-1 border-l border-line px-1 py-1 text-center ${we ? 'weekend' : ''} ${today === d ? 'font-medium text-accent' : ''}`}>
+                  {fmtTz(d, tz, { weekday: 'short' })}<br />{fmtTz(d, tz, { day: '2-digit', month: '2-digit' })}
                 </div>
               )
             })}
@@ -101,12 +105,24 @@ export function Timeline({ c, from, days, now }: { c: Calendar; from: Date; days
                 const width = ((s.end - s.start) / span) * 100
                 const col = personColor(s.personId)
                 const label = p ? shortName(p.name) : ''
+                const layerName = ln.final ? 'Итог' : ln.key === 'shifts' ? (s.hatch ? 'Подмена' : 'Разовое') : c.layers.find((x) => ln.key.startsWith(x.id))?.name ?? ln.label
+                const lines = [
+                  `${c.name} · ${s.hatch ? `${layerName}, подмена` : layerName}`,
+                  `${fmtDT(s.start, tz)} — ${fmtDT(s.end, tz)} · ${fmtDur(s.end - s.start)}`,
+                  `Часовой пояс: ${tzName(tz)}`,
+                  ...(s.extra ? [s.extra] : []),
+                ]
+                const open = (el: Element) => p && setInfo({ title: p.name, lines, rect: barRect(el) })
                 return (
-                  <div key={i} title={p ? `${p.name}\n${fmtDT(s.start)} — ${fmtDT(s.end)}${s.extra ? '\n' + s.extra : ''}` : ''}
-                    className="absolute top-1 bottom-1 overflow-hidden rounded-md px-1 text-[10px] leading-7 font-medium whitespace-nowrap text-white"
+                  <div key={i} data-bar role="button" tabIndex={0}
+                    aria-label={p ? `${p.name}, ${lines.join(', ')}` : undefined}
+                    onClick={(e) => open(e.currentTarget)}
+                    onFocus={(e) => open(e.currentTarget)}
+                    onBlur={() => setInfo(null)}
+                    className="absolute top-1 bottom-1 cursor-pointer overflow-hidden rounded-md px-1 text-[10px] leading-7 font-medium whitespace-nowrap text-white focus-visible:ring-2 focus-visible:ring-ink"
                     style={{
                       left: `${left}%`, width: `calc(${width}% - 2px)`, background: col,
-                      backgroundImage: s.hatch ? 'repeating-linear-gradient(45deg, rgba(255,255,255,.35) 0 4px, transparent 4px 8px)' : undefined,
+                      ...(s.hatch ? SUBST_STYLE : {}),
                     }}>
                     {width > 5 ? label : ''}
                   </div>
@@ -128,35 +144,38 @@ export function Timeline({ c, from, days, now }: { c: Calendar; from: Date; days
           </div>
         </div>
       </div>
+      {info && <BarCard info={info} onClose={() => setInfo(null)} />}
     </div>
   )
 }
 
-export function MonthGrid({ c, month, now }: { c: Calendar; month: Date; now: number }) {
+export function MonthGrid({ c, month, now }: { c: Calendar; month: number; now: number }) {
   const { state } = useStore()
-  const first = new Date(month.getFullYear(), month.getMonth(), 1)
-  const startPad = (first.getDay() + 6) % 7
-  const gridStart = addDays(first, -startPad)
-  const cells = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i))
+  const tz = c.timezone
+  const first = month
+  const monthNo = zparts(first, tz).m
+  const gridStart = addDays(first, -weekday(first, tz), tz)
+  const cells = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i, tz))
+  const today = startOfDay(now, tz)
   const byId = (id: string) => state.people.find((p) => p.id === id)
   return (
     <div className="grid grid-cols-7 overflow-hidden rounded-lg text-xs">
       {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((d) => <div key={d} className="px-2 py-1 font-medium text-faint">{d}</div>)}
       {cells.map((d, i) => {
-        const inMonth = d.getMonth() === month.getMonth()
+        const inMonth = zparts(d, tz).m === monthNo
         const people = new Map<string, string>()
         for (let h = 0; h < 24; h += 3) {
-          for (const e of calendarOnCall(c, d.getTime() + h * HOUR + 1)) if (!people.has(e.personId)) people.set(e.personId, e.kind)
+          for (const e of calendarOnCall(c, d + h * HOUR + 1)) if (!people.has(e.personId)) people.set(e.personId, e.kind)
         }
-        const isToday = startOfDay(now).getTime() === d.getTime()
+        const isToday = today === d
         return (
           <div key={i} className={`min-h-24 border-t border-l border-line p-1 ${inMonth ? '' : 'text-faint'} ${isToday ? 'bg-accent-soft' : ''}`}>
-            <div className="mb-1 font-semibold">{d.getDate()}</div>
+            <div className="mb-1 font-semibold">{zparts(d, tz).d}</div>
             <div className="space-y-0.5">
               {[...people].map(([id, kind]) => {
                 const person = byId(id)
                 return (
-                  <div key={id} title={person ? `${person.name}${kind === 'override' ? ' · подмена' : kind === 'oneoff' ? ' · разовое' : ''}` : ''} className="truncate rounded px-1" style={{ background: personColor(id) + '22', borderLeft: `3px solid ${personColor(id)}`, backgroundImage: kind === 'override' ? 'repeating-linear-gradient(45deg, transparent 0 3px, rgba(255,255,255,.35) 3px 5px)' : undefined }}>
+                  <div key={id} title={person ? `${person.name}${kind === 'override' ? ' · подмена' : kind === 'oneoff' ? ' · разовое' : ''}` : ''} className="truncate rounded px-1" style={{ background: personColor(id) + '22', borderLeft: `3px solid ${personColor(id)}`, ...(kind === 'override' ? { backgroundImage: SUBST_STYLE.backgroundImage, outline: '1px dashed ' + personColor(id), outlineOffset: '-1px' } : {}) }}>
                     {person ? shortName(person.name) : ''}
                   </div>
                 )

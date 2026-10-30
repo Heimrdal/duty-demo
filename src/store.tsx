@@ -1,20 +1,23 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
-import { initialState } from './data'
+import { initialState, migrateState } from './data'
 import { uid } from './engine'
 import type { Calendar, State, TgMessage } from './types'
 
-const KEY = 'oncall-demo-state-v3'
+const KEY = 'oncall-demo-state-v3' // ключ прежний: внутри version, миграция в migrateState
 
 function load(): State {
   try {
     const raw = localStorage.getItem(KEY)
     if (raw) {
-      const s = JSON.parse(raw) as State
-      if (s.version === 3) return s
+      const s = migrateState(JSON.parse(raw))
+      if (s) return s
     }
   } catch { /* ignore */ }
   return initialState()
 }
+
+export interface ToastAction { label: string; onClick: () => void }
+export interface Toast { id: string; text: string; action?: ToastAction }
 
 interface Ctx {
   state: State
@@ -22,15 +25,16 @@ interface Ctx {
   updateCalendar: (id: string, fn: (c: Calendar) => Calendar) => void
   sendTg: (m: Omit<TgMessage, 'id' | 'ts'>) => void
   reset: () => void
-  toast: (text: string) => void
-  toasts: { id: string; text: string }[]
+  toast: (text: string, action?: ToastAction) => void
+  dismissToast: (id: string) => void
+  toasts: Toast[]
 }
 
 const StoreCtx = createContext<Ctx>(null as unknown as Ctx)
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<State>(load)
-  const [toasts, setToasts] = useState<{ id: string; text: string }[]>([])
+  const [toasts, setToasts] = useState<Toast[]>([])
   useEffect(() => {
     try { localStorage.setItem(KEY, JSON.stringify(state)) } catch { /* ignore */ }
   }, [state])
@@ -39,16 +43,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setState((s) => ({ ...s, calendars: s.calendars.map((c) => (c.id === id ? fn(c) : c)) })), [])
   const sendTg = useCallback((m: Omit<TgMessage, 'id' | 'ts'>) =>
     setState((s) => ({ ...s, messages: [...s.messages, { ...m, id: uid(), ts: new Date().toISOString() }] })), [])
-  const toast = useCallback((text: string) => {
+  const dismissToast = useCallback((id: string) => setToasts((t) => t.filter((x) => x.id !== id)), [])
+  const toast = useCallback((text: string, action?: ToastAction) => {
     const id = uid()
-    setToasts((t) => [...t, { id, text }])
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3500)
+    setToasts((t) => [...t, { id, text, action }])
+    // с кнопкой «Вернуть» тост живёт дольше, чтобы успеть нажать
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), action ? 8000 : 3500)
   }, [])
   const reset = useCallback(() => {
     const s = initialState()
     setState((old) => ({ ...s, currentUserId: old.currentUserId }))
   }, [])
-  return <StoreCtx.Provider value={{ state, update, updateCalendar, sendTg, reset, toast, toasts }}>{children}</StoreCtx.Provider>
+  return <StoreCtx.Provider value={{ state, update, updateCalendar, sendTg, reset, toast, dismissToast, toasts }}>{children}</StoreCtx.Provider>
 }
 
 export const useStore = () => useContext(StoreCtx)

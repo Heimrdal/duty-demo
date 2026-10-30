@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { calendarOnCall, fmtT } from '../engine'
+import { cycleMinutes } from '../escalation'
 import { useNow, useStore } from '../store'
+import { tzLabel } from '../tz'
 import { Btn, Card, EscalationChain, inputCls, resolveChain, shortName } from '../ui'
 
-interface Ev { t: number; text: string; level?: number; kind: 'page' | 'wait' | 'ack' | 'end' }
+/** t — минуты от начала инцидента (по шкале симуляции) */
+interface Ev { t: number; text: string; level?: number; cycle?: number; skip?: boolean; kind: 'page' | 'wait' | 'ack' | 'end' }
 
 function incidentFor(name: string, product: string) {
   return `«${name}»: нет ответа сервиса «${product}»`
@@ -17,6 +20,8 @@ export function Escalation() {
   const [customTitle, setCustomTitle] = useState<string | null>(null)
   const [events, setEvents] = useState<Ev[]>([])
   const [running, setRunning] = useState(false)
+  const [incident, setIncident] = useState<{ id: string; start: number; cycles: number; cycleMin: number } | null>(null)
+  const lastT = useRef(0)
   const timer = useRef<number | null>(null)
   const c = (state.calendars.find((x) => x.id === calId) ?? state.calendars[state.calendars.length - 1])!
   const title = customTitle ?? (c ? incidentFor(c.name, c.product) : '')
@@ -25,24 +30,43 @@ export function Escalation() {
 
   const run = () => {
     stop()
-    const chain = resolveChain(c, state.people, Date.now())
+    const start = Date.now()
+    const chain = resolveChain(c, state.people, start, state.calendars)
+    const cycleMin = cycleMinutes(c, chain)
+    const cycles = c.repeat + 1
     const inc = 'INC-' + Math.floor(48000 + Math.random() * 999)
+    setIncident({ id: inc, start, cycles, cycleMin })
+    lastT.current = 0
     setEvents([{ t: 0, text: `Создан инцидент ${inc}: «${title}» → политика «${c.name}»`, kind: 'page' }])
     setRunning(true)
     let i = 0
-    const total = chain.length * (c.repeat + 1)
+    const total = chain.length * cycles
     const tick = () => {
-      if (i >= total) { setEvents((e) => [...e, { t: 0, text: 'Цепочка исчерпана — инцидент остался без подтверждения. Оповещение руководству СЦ.', kind: 'end' }]); setRunning(false); return }
+      if (i >= total) { setEvents((e) => [...e, { t: lastT.current, text: 'Цепочка исчерпана — инцидент остался без подтверждения. Оповещение руководству СЦ.', kind: 'end' }]); setRunning(false); return }
       const lv = chain[i % chain.length]
-      const round = Math.floor(i / chain.length) + 1
-      setEvents((e) => [...e, { t: lv.delayMin, level: lv.level, kind: 'page', text: `${round > 1 ? `[повтор ${round}] ` : ''}Уровень ${lv.level} — ${lv.label}: ${lv.people.map((p) => p.name).join(', ') || 'никого'} (звонок и Telegram)` }])
-      lv.people.forEach((p) => sendTg({ toPersonId: p.id, calendarId: c.id, kind: 'escalation', text: `🚨 ${inc} · уровень ${lv.level} (${lv.label})\nКалендарь: «${c.name}»\n${title}\n${lv.level > 1 ? 'Предыдущий уровень не подтвердил.\n' : ''}[Принять] [Эскалировать]` }))
+      const cycle = Math.floor(i / chain.length) + 1
+      const at = (cycle - 1) * cycleMin + lv.delayMin
+      lastT.current = at
+      const names = lv.people.map((p) => p.name).join(', ')
+      const skipped = lv.already.map((a) => `${a.person.name} (уровень ${a.level})`).join(', ')
+      const skip = !lv.people.length && lv.already.length > 0
+      const text = skip
+        ? `Уровень ${lv.level} — ${lv.label}: пропущен, уже уведомлены — ${skipped}`
+        : `Уровень ${lv.level} — ${lv.label}: ${names || 'никого'}${names ? ' (звонок и Telegram)' : ''}${skipped ? ` · не дублируем: ${skipped}` : ''}`
+      setEvents((e) => [...e, { t: at, level: lv.level, cycle, skip, kind: 'page', text }])
+      lv.people.forEach((p) => sendTg({ toPersonId: p.id, calendarId: c.id, incidentId: inc, kind: 'escalation', text: `🚨 ${inc} · уровень ${lv.level} (${lv.label})${cycles > 1 ? ` · цикл ${cycle} из ${cycles}` : ''}\nКалендарь: «${c.name}»\n${title}\n+${at} мин от начала инцидента\n${lv.level > 1 || cycle > 1 ? 'Предыдущий уровень не подтвердил.\n' : ''}[Принять] [Эскалировать]` }))
       i++
       timer.current = window.setTimeout(tick, 1600)
     }
     timer.current = window.setTimeout(tick, 600)
   }
-  const ack = () => { stop(); setEvents((e) => [...e, { t: 0, kind: 'ack', text: 'Инцидент подтверждён — эскалация остановлена' }]) }
+  const ack = () => { stop(); setEvents((e) => [...e, { t: lastT.current, kind: 'ack', text: 'Инцидент подтверждён — эскалация остановлена' }]) }
+  const zl = tzLabel(c?.timezone)
+  const stamp = (e: Ev) => {
+    if (!incident) return ''
+    const abs = fmtT(incident.start + e.t * 60000, c.timezone)
+    return `+${e.t} мин · ${abs} ${zl}`
+  }
 
   return (
     <div className="space-y-8">
@@ -53,21 +77,25 @@ export function Escalation() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card className="space-y-4 p-5">
           <h3 className="font-medium">Симуляция инцидента</h3>
-          <select className={inputCls} value={c?.id ?? ''} onChange={(e) => { setCalId(e.target.value); setCustomTitle(null); stop(); setEvents([]) }}>{[...state.calendars].reverse().map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select>
+          <select aria-label="Политика эскалации (календарь)" className={inputCls} value={c?.id ?? ''} onChange={(e) => { setCalId(e.target.value); setCustomTitle(null); stop(); setEvents([]); setIncident(null) }}>{[...state.calendars].reverse().map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select>
           <input className={inputCls} value={title} onChange={(e) => setCustomTitle(e.target.value)} aria-label="Текст инцидента" />
           <div className="flex gap-2"><Btn onClick={run}>Запустить</Btn><Btn variant="ghost" onClick={ack} disabled={!running}>Подтвердить</Btn></div>
-          <p className="text-xs text-muted">Время ускорено. Сообщения появятся в уведомлениях.</p>
-          <div className="space-y-2">
+          <p className="text-xs text-muted">
+            Время ускорено. Каждый человек получает одно уведомление за цикл.
+            {incident && <> {incident.cycles > 1 ? `Циклов: ${incident.cycles}, каждый ${incident.cycleMin} мин. ` : ''}<a data-testid="incident-messages" className="font-medium text-accent hover:underline" href={`#/notifications/${encodeURIComponent(incident.id)}`}>Открыть сообщения инцидента {incident.id}</a></>}
+          </p>
+          <div className="space-y-2" data-testid="esc-events">
             {events.map((e, i) => (
-              <div key={i} className={`rounded-lg px-3 py-2 text-sm ${e.kind === 'ack' ? 'tint-ok' : e.kind === 'end' ? 'tint-danger' : 'tint-neutral'}`}>
-                <span className="mr-2 text-xs text-faint">{e.level ? `+${e.t} мин` : fmtT(Date.now())}</span>{e.text}
+              <div key={i} className={`rounded-lg px-3 py-2 text-sm ${e.kind === 'ack' ? 'tint-ok' : e.kind === 'end' ? 'tint-danger' : 'tint-neutral'} ${e.skip ? 'text-muted' : ''}`}>
+                <div className="mb-0.5 text-xs text-faint">{e.cycle && incident && incident.cycles > 1 ? `Цикл ${e.cycle} из ${incident.cycles} · ` : ''}{stamp(e)}</div>
+                {e.text}
               </div>
             ))}
           </div>
         </Card>
         <Card className="p-5">
           <h3 className="mb-4 font-medium">{c.name}</h3>
-          <EscalationChain c={c} people={state.people} t={now} />
+          <EscalationChain c={c} people={state.people} t={now} calendars={state.calendars} />
         </Card>
       </div>
       <div>

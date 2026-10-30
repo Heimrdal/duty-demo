@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react'
 import { calendarOnCall, DAY, fmtDT, fmtDur, HOUR, nextHandoff, sampleSegments, teamCoverage } from '../engine'
 import { TakeDutyModal } from '../forms'
 import { useNow, useStore } from '../store'
-import { Avatar, Card, EscalationChain, TYPE_META } from '../ui'
+import { DEFAULT_TZ, fmtTz, tzLabel } from '../tz'
+import { Avatar, Card, ContactActions, EscalationChain, TYPE_META } from '../ui'
 import type { CalendarType } from '../types'
 
 export function Dashboard() {
@@ -27,19 +28,19 @@ export function Dashboard() {
     <div className="space-y-10">
       <header>
         <h1 className="text-2xl font-semibold">Кто дежурит сейчас</h1>
-        <p className="mt-1 text-sm text-muted">{new Date(now).toLocaleString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })} МСК</p>
+        <p className="mt-1 text-sm text-muted">{fmtTz(now, DEFAULT_TZ, { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })} {tzLabel(DEFAULT_TZ)}</p>
       </header>
 
       <div className="grid grid-cols-2 gap-8 md:grid-cols-4">
         <Stat k="Календари" v={String(state.calendars.length)} />
         <Stat k="Сейчас на смене" v={String(totalOnCall)} />
         <Stat k="Сейчас без покрытия" v={String(gaps.length)} danger={gaps.length > 0} wrap hint={gaps.length ? `прямо сейчас: ${gaps.map((g) => g.name).join(', ')}` : weekGaps.length ? `сейчас все на смене · за 7 дней дыры: ${weekGaps.map((c) => c.name).join(', ')}` : 'прямо сейчас и на 7 дней вперёд дыр нет'} />
-        <Stat k="Моя смена" v={mine[0] ? (mine[0].start <= now ? 'Сейчас' : fmtDT(mine[0].start)) : 'Нет'} hint={mine[0]?.c.name} />
+        <Stat k="Моя смена" v={mine[0] ? (mine[0].start <= now ? 'Сейчас' : `${fmtDT(mine[0].start, mine[0].c.timezone)} ${tzLabel(mine[0].c.timezone)}`) : 'Нет'} hint={mine[0]?.c.name} />
       </div>
 
       <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm">
         {(['all', 'sitcenter', 'monitoring', 'product', 'infra'] as const).map((t) => (
-          <button key={t} onClick={() => setFilter(t)} className={filter === t ? 'font-medium text-ink' : 'text-muted hover:text-ink'}>
+          <button key={t} aria-pressed={filter === t} onClick={() => setFilter(t)} className={filter === t ? 'font-medium text-ink' : 'text-muted hover:text-ink'}>
             {t === 'all' ? 'Все' : TYPE_META[t].label}
           </button>
         ))}
@@ -48,7 +49,7 @@ export function Dashboard() {
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         {rows.map(({ c, entries }) => {
           const lead = byId(c.leadId)
-          const handoffs = c.layers.map((l) => nextHandoff(l, now))
+          const handoffs = c.layers.map((l) => nextHandoff(l, now, c.timezone))
           const nextH = handoffs.length ? Math.min(...handoffs) : null
           return (
             <Card key={c.id} className="flex flex-col">
@@ -66,18 +67,19 @@ export function Dashboard() {
                   return (
                     <div key={e.personId} className="flex items-center gap-3">
                       <Avatar p={p} size={32} />
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <div className="text-sm font-medium">{p.name}{p.id === me.id && <span className="font-normal text-muted"> · вы</span>}</div>
                         <div className="truncate text-xs text-muted">{e.layerName}{e.replaced && ` · вместо ${byId(e.replaced)?.name}`} · {p.phone}</div>
                       </div>
+                      <ContactActions p={p} />
                     </div>
                   )
                 })}
-                <p className="text-xs text-faint">Лид {lead?.name}{nextH ? ` · передача ${fmtDT(nextH)}` : ''}</p>
+                <p className="text-xs text-faint">Лид {lead?.name}{nextH ? ` · передача ${fmtDT(nextH, c.timezone)} ${tzLabel(c.timezone)}` : ''}</p>
                 <button className="text-sm text-muted hover:text-ink" onClick={() => setOpenChain(openChain === c.id ? null : c.id)}>
                   {openChain === c.id ? 'Скрыть эскалацию' : 'Эскалация'}
                 </button>
-                {openChain === c.id && <EscalationChain c={c} people={state.people} t={now} compact />}
+                {openChain === c.id && <EscalationChain c={c} people={state.people} t={now} calendars={state.calendars} compact />}
               </div>
               <div className="px-5 pb-4">
                 <button className="text-sm text-muted hover:text-ink" onClick={() => setTake(c.id)}>Взять дежурство</button>
@@ -96,7 +98,7 @@ export function Dashboard() {
             {mine.map((s, i) => (
               <div key={i} className="flex flex-wrap items-baseline gap-x-4 gap-y-1 py-2.5 text-sm">
                 <span className="w-44 font-medium">{s.c.name}</span>
-                <span className="text-muted">{fmtDT(s.start)} — {fmtDT(s.end)}</span>
+                <span className="text-muted">{fmtDT(s.start, s.c.timezone)} — {fmtDT(s.end, s.c.timezone)} {tzLabel(s.c.timezone)}</span>
                 <span className="text-faint">{fmtDur(s.end - s.start)}</span>
                 {s.start <= now && <span className="text-ok">сейчас</span>}
               </div>

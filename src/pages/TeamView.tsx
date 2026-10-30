@@ -5,7 +5,7 @@ import { Empty, teamHref } from '../ui'
 
 function TeamList() {
   const { state } = useStore()
-  const names = [...new Set([...state.people.map((p) => p.team), ...state.calendars.map((c) => c.team)])].sort((a, b) => a.localeCompare(b, 'ru'))
+  const names = [...new Set([...state.people.flatMap((p) => p.teams), ...state.calendars.map((c) => c.team)])].sort((a, b) => a.localeCompare(b, 'ru'))
   return (
     <div className="space-y-8">
       <header>
@@ -14,7 +14,7 @@ function TeamList() {
       </header>
       <div className="divide-y divide-line">
         {names.map((t) => {
-          const members = state.people.filter((p) => p.team === t).length
+          const members = state.people.filter((p) => p.teams.includes(t)).length
           const cals = state.calendars.filter((c) => c.team === t)
           return (
             <a key={t} href={teamHref(t)} className="flex items-baseline justify-between gap-4 py-4">
@@ -35,14 +35,14 @@ export function TeamView({ name }: { name: string }) {
   const { state } = useStore()
   if (!name) return <TeamList />
   const people = state.people
-  const known = people.some((p) => p.team === name) || state.calendars.some((c) => c.team === name)
+  const known = people.some((p) => p.teams.includes(name)) || state.calendars.some((c) => c.team === name)
   if (!known) {
     return <Empty title="Команда не найдена" text="Откройте список команд и выберите таймлайн." action={<a className="text-sm text-accent" href="#/teams">К командам</a>} />
   }
   const cals = state.calendars.filter((c) => c.team === name)
   const leads = [...new Set(cals.map((c) => c.leadId))].map((id) => people.find((p) => p.id === id)).filter((p) => !!p)
   const managers = [...new Map(leads.map((l) => managerOf(people, l.id)).filter((p) => !!p).map((p) => [p.id, p])).values()]
-  const members = people.filter((p) => p.team === name).length
+  const members = people.filter((p) => p.teams.includes(name)).length
 
   return (
     <div className="space-y-8">

@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { addDays, fmtDT, fmtDur, layerOnCall, rotationLabel, startOfDay, uid } from '../engine'
+import { addDays, fmtDT, fmtDur, layerOnCall, rotationLabel, shiftGap, startOfDay, uid } from '../engine'
+import { fmtTz, startOfMonthTz, TZ_OPTIONS, tzLabel } from '../tz'
 import { LayerWizard, TakeDutyModal } from '../forms'
 import { useNow, useStore } from '../store'
 import { MonthGrid, Timeline } from '../Timeline'
-import { Btn, Card, Empty, ESC_LABEL, EscalationChain, Field, inputCls, KindMark, LeadSelect, Menu, ScheduleLegend, teamHref, TYPE_META } from '../ui'
-import type { Calendar, CalendarType, EscTarget, Layer } from '../types'
+import { Btn, Card, Empty, ESC_LABEL, EscalationChain, Field, inputCls, KindMark, LeadSelect, Menu, Modal, ScheduleLegend, teamHref, TYPE_META } from '../ui'
+import type { Calendar, CalendarType, EscTarget, Layer, Shift } from '../types'
 
 const TABS = [['schedule', 'Расписание'], ['layers', 'Слои'], ['escalation', 'Эскалация'], ['shifts', 'Дежурства'], ['settings', 'Настройки']] as const
 type Tab = (typeof TABS)[number][0]
@@ -39,6 +40,7 @@ export function CalendarView({ id }: { id: string }) {
               {c.product} · {c.team}
               {' · '}лид {lead?.name ?? 'не назначен'} · {owner?.name}
               {' · '}{c.layerMode === 'parallel' ? 'слои параллельно' : 'слои по приоритету'}
+              {' · '}{tzLabel(c.timezone)}
             </p>
             <a href={teamHref(c.team)} className="mt-2 inline-block text-sm font-medium text-accent">Таймлайн команды</a>
           </div>
@@ -53,7 +55,7 @@ export function CalendarView({ id }: { id: string }) {
         </div>
       )}
       <div className="flex gap-5 border-b border-line text-sm">
-        {TABS.map(([k, label]) => <button key={k} onClick={() => setTab(k)} className={`-mb-px border-b pb-2 ${tab === k ? 'border-ink font-medium text-ink' : 'border-transparent text-muted hover:text-ink'}`}>{label}</button>)}
+        {TABS.map(([k, label]) => <button key={k} aria-current={tab === k ? 'page' : undefined} onClick={() => setTab(k)} className={`-mb-px border-b pb-2 ${tab === k ? 'border-ink font-medium text-ink' : 'border-transparent text-muted hover:text-ink'}`}>{label}</button>)}
       </div>
       {tab === 'schedule' && <ScheduleTab c={c} />}
       {tab === 'layers' && <LayersTab c={c} onAdd={() => setDraft('new')} onEdit={setDraft} />}
@@ -71,8 +73,9 @@ function ScheduleTab({ c }: { c: Calendar }) {
   const [view, setView] = useState<'7' | '14' | '28' | 'month'>('14')
   const [offset, setOffset] = useState(0)
   const days = view === 'month' ? 0 : +view
-  const from = addDays(startOfDay(now), (view === 'month' ? 0 : -1) + offset * (days || 0))
-  const month = new Date(new Date(now).getFullYear(), new Date(now).getMonth() + offset, 1)
+  const tz = c.timezone
+  const from = addDays(startOfDay(now, tz), (view === 'month' ? 0 : -1) + offset * (days || 0), tz)
+  const month = startOfMonthTz(now, offset, tz)
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -85,7 +88,7 @@ function ScheduleTab({ c }: { c: Calendar }) {
           <button className="rounded-md px-2 py-1 text-muted hover:bg-surface-2" onClick={() => setOffset(offset - 1)} aria-label="Назад">‹</button>
           <button className="rounded-md px-2 py-1 text-muted hover:bg-surface-2" onClick={() => setOffset(0)}>Сегодня</button>
           <button className="rounded-md px-2 py-1 text-muted hover:bg-surface-2" onClick={() => setOffset(offset + 1)} aria-label="Вперёд">›</button>
-          <span className="min-w-36 px-2 text-center text-muted">{view === 'month' ? month.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' }) : `${from.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })} – ${addDays(from, days - 1).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}`}</span>
+          <span className="min-w-36 px-2 text-center text-muted">{view === 'month' ? fmtTz(month, tz, { month: 'long', year: 'numeric' }) : `${fmtTz(from, tz, { day: 'numeric', month: 'short' })} – ${fmtTz(addDays(from, days - 1, tz), tz, { day: 'numeric', month: 'short' })}`} <span className="text-faint">· {tzLabel(tz)}</span></span>
         </div>
       </div>
       <Card className="overflow-hidden p-2">
@@ -111,13 +114,13 @@ function LayersTab({ c, onAdd, onEdit }: { c: Calendar; onAdd: () => void; onEdi
       </div>
       {c.layers.length === 0 && <Empty title="Слоёв пока нет" text="Шаблон в мастере заполнит ротацию за один клик." />}
       {c.layers.map((l, i) => {
-        const on = layerOnCall(l, now)
+        const on = layerOnCall(l, now, c.timezone)
         return (
           <div key={l.id} className="group rounded-xl border border-line bg-surface px-5 py-4">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="flex flex-wrap items-center gap-3"><span className="font-medium">{l.name}</span><KindMark k={l.kind} /></div>
-                <p className="mt-1 text-sm text-muted">{rotationLabel(l)} · передача {l.handoffTime} · {Math.min(l.parallel, l.participants.length)} одновременно · {restr(l)}</p>
+                <p className="mt-1 text-sm text-muted">{rotationLabel(l)} · передача {l.handoffTime} {tzLabel(c.timezone)} · {Math.min(l.parallel, l.participants.length)} одновременно · {restr(l)}</p>
               </div>
               <div className="flex items-center gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
                 <button className="px-2 text-sm text-muted hover:text-ink" onClick={() => onEdit(l)}>Изменить</button>
@@ -155,27 +158,31 @@ function EscalationTab({ c }: { c: Calendar }) {
           {c.escalation.map((s, i) => (
             <div key={s.id} className="flex flex-wrap items-center gap-2">
               <span className="w-5 text-sm text-faint">{i + 1}</span>
-              <select className={`${inputCls} w-56`} value={s.target} onChange={(e) => setSteps((a) => a.map((x) => (x.id === s.id ? { ...x, target: e.target.value as EscTarget } : x)))}>
-                {Object.entries(ESC_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-              </select>
-              {s.target === 'person' && (
-                <select className={`${inputCls} w-48`} value={s.personId ?? ''} onChange={(e) => setSteps((a) => a.map((x) => (x.id === s.id ? { ...x, personId: e.target.value } : x)))}>
+              {i === 0 ? (
+                <span className="w-56 text-sm" title="Первый уровень всегда — текущие дежурные календаря">{ESC_LABEL.oncall} <span className="text-faint">· сразу</span></span>
+              ) : (
+                <select aria-label={`Уровень ${i + 1}: кого звать`} className={`${inputCls} w-56`} value={s.target} onChange={(e) => setSteps((a) => a.map((x) => (x.id === s.id ? { ...x, target: e.target.value as EscTarget } : x)))}>
+                  {Object.entries(ESC_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+              )}
+              {s.target === 'person' && i > 0 && (
+                <select aria-label={`Уровень ${i + 1}: сотрудник`} className={`${inputCls} w-48`} value={s.personId ?? ''} onChange={(e) => setSteps((a) => a.map((x) => (x.id === s.id ? { ...x, personId: e.target.value } : x)))}>
                   <option value="">Кто</option>{state.people.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               )}
-              {i > 0 && <span className="flex items-center gap-1 text-sm text-muted">через <input type="number" min={1} className={`${inputCls} w-16`} value={s.delayMin} onChange={(e) => setSteps((a) => a.map((x) => (x.id === s.id ? { ...x, delayMin: Math.max(1, +e.target.value) } : x)))} /> мин</span>}
-              <button className="ml-auto text-faint hover:text-danger" aria-label="Удалить уровень" onClick={() => setSteps((a) => a.filter((x) => x.id !== s.id))}>×</button>
+              {i > 0 && <span className="flex items-center gap-1 text-sm text-muted">через <input type="number" aria-label={`Уровень ${i + 1}: задержка, минут`} min={1} className={`${inputCls} w-16`} value={s.delayMin} onChange={(e) => setSteps((a) => a.map((x) => (x.id === s.id ? { ...x, delayMin: Math.max(1, +e.target.value) } : x)))} /> мин</span>}
+              {i > 0 && <button className="ml-auto text-faint hover:text-danger" aria-label={`Удалить уровень ${i + 1}`} onClick={() => setSteps((a) => a.filter((x) => x.id !== s.id))}>×</button>}
             </div>
           ))}
         </div>
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
           <button className="text-sm text-muted hover:text-ink" onClick={() => setSteps((a) => [...a, { id: uid(), target: 'manager', delayMin: 15 }])}>Добавить уровень</button>
-          <label className="flex items-center gap-2 text-sm text-muted">Повторить <input type="number" min={0} max={5} className={`${inputCls} w-16`} value={c.repeat} onChange={(e) => updateCalendar(c.id, (cal) => ({ ...cal, repeat: +e.target.value }))} /> раз</label>
+          <label className="flex items-center gap-2 text-sm text-muted">Повторить <input type="number" aria-label="Повторить цепочку, раз" min={0} max={5} className={`${inputCls} w-16`} value={c.repeat} onChange={(e) => updateCalendar(c.id, (cal) => ({ ...cal, repeat: +e.target.value }))} /> раз</label>
         </div>
       </div>
       <div>
-        <h3 className="mb-4 font-medium">Сейчас, {fmtDT(now)}</h3>
-        <EscalationChain c={c} people={state.people} t={now} />
+        <h3 className="mb-4 font-medium">Сейчас, {fmtDT(now, c.timezone)} {tzLabel(c.timezone)}</h3>
+        <EscalationChain c={c} people={state.people} t={now} calendars={state.calendars} />
         <a href="#/escalation" className="mt-4 inline-block text-sm text-muted hover:text-ink">Симуляция инцидента</a>
       </div>
     </div>
@@ -184,8 +191,23 @@ function EscalationTab({ c }: { c: Calendar }) {
 
 function ShiftsTab({ c, onTake }: { c: Calendar; onTake: () => void }) {
   const { state, updateCalendar, toast } = useStore()
+  const [ask, setAsk] = useState<{ s: Shift; gap: { start: number; end: number } } | null>(null)
   const byId = (id?: string) => state.people.find((p) => p.id === id)
   const list = [...c.shifts].sort((a, b) => +new Date(a.start) - +new Date(b.start))
+  const tz = c.timezone
+  const zl = tzLabel(tz)
+  const doCancel = (s: Shift) => {
+    updateCalendar(c.id, (cal) => ({ ...cal, shifts: cal.shifts.filter((x) => x.id !== s.id) }))
+    toast(`Смена отменена: ${byId(s.personId)?.name ?? ''}`, {
+      label: 'Вернуть',
+      onClick: () => updateCalendar(c.id, (cal) => (cal.shifts.some((x) => x.id === s.id) ? cal : { ...cal, shifts: [...cal.shifts, s] })),
+    })
+  }
+  const requestCancel = (s: Shift) => {
+    const gap = shiftGap(c, s, Date.now())
+    if (gap) setAsk({ s, gap })
+    else doCancel(s)
+  }
   return (
     <div>
       <div className="mb-4 flex items-center justify-between"><h3 className="font-medium">Разовые дежурства и подмены</h3><Btn onClick={onTake}>Взять дежурство</Btn></div>
@@ -196,13 +218,29 @@ function ShiftsTab({ c, onTake }: { c: Calendar; onTake: () => void }) {
             <span className="font-medium">{byId(s.personId)?.name}</span>
             <KindMark k={s.replacesPersonId ? 'override' : 'oneoff'} />
             {s.replacesPersonId && <span className="text-muted">вместо {byId(s.replacesPersonId)?.name}</span>}
-            <span className="text-muted">{fmtDT(s.start)} — {fmtDT(s.end)}</span>
+            <span className="text-muted">{fmtDT(s.start, tz)} — {fmtDT(s.end, tz)} {zl}</span>
             <span className="text-faint">{fmtDur(+new Date(s.end) - +new Date(s.start))}</span>
             {s.note && <span className="text-faint">{s.note}</span>}
-            <button className="ml-auto text-muted opacity-0 group-hover:opacity-100 hover:text-danger focus:opacity-100" onClick={() => { updateCalendar(c.id, (cal) => ({ ...cal, shifts: cal.shifts.filter((x) => x.id !== s.id) })); toast('Смена отменена') }}>Отменить</button>
+            <button className="ml-auto text-muted opacity-0 group-hover:opacity-100 hover:text-danger focus:opacity-100" aria-label={`Отменить смену: ${byId(s.personId)?.name}, ${fmtDT(s.start, tz)} — ${fmtDT(s.end, tz)}`} onClick={() => requestCancel(s)}>Отменить</button>
           </div>
         ))}
       </div>
+      {ask && (
+        <Modal title="Отменить смену?" describedBy="gap-warning" onClose={() => setAsk(null)}>
+          <div id="gap-warning" data-testid="gap-warning">
+            <p className="text-sm leading-relaxed">
+              Смена: <b>{byId(ask.s.personId)?.name}</b>, {fmtDT(ask.s.start, tz)} — {fmtDT(ask.s.end, tz)} {zl}.
+            </p>
+            <p className="mt-2 text-sm leading-relaxed text-danger">
+              После отмены в календаре «{c.name}» появится дыра в покрытии: {fmtDT(ask.gap.start, tz)} — {fmtDT(ask.gap.end, tz)} {zl} никто не дежурит.
+            </p>
+          </div>
+          <div className="mt-5 flex justify-end gap-2">
+            <Btn variant="ghost" onClick={() => setAsk(null)}>Оставить смену</Btn>
+            <Btn variant="danger" onClick={() => { doCancel(ask.s); setAsk(null) }}>Всё равно отменить</Btn>
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }
@@ -219,9 +257,14 @@ function SettingsTab({ c }: { c: Calendar }) {
         <Field label="Тип"><select className={inputCls} value={c.type} onChange={(e) => set({ type: e.target.value as CalendarType })}>{(Object.keys(TYPE_META) as CalendarType[]).map((t) => <option key={t} value={t}>{TYPE_META[t].label}</option>)}</select></Field>
       </div>
       <div className="space-y-4">
-        <Field label="Лид группы"><LeadSelect allowEmpty={false} people={state.people} teamFirst={state.people.filter((p) => p.team === c.team).map((p) => p.id)} value={c.leadId} onChange={(leadId) => set({ leadId })} /></Field>
+        <Field label="Лид группы"><LeadSelect allowEmpty={false} people={state.people} teamFirst={state.people.filter((p) => p.teams.includes(c.team)).map((p) => p.id)} value={c.leadId} onChange={(leadId) => set({ leadId })} /></Field>
         <Field label="Сочетание слоёв"><select className={inputCls} value={c.layerMode} onChange={(e) => set({ layerMode: e.target.value as Calendar['layerMode'] })}><option value="parallel">Параллельно</option><option value="priority">По приоритету</option></select></Field>
-        <Field label="Часовой пояс"><input className={inputCls} value="Europe/Moscow (МСК)" disabled /></Field>
+        <Field label="Часовой пояс" hint="В этом поясе считаются передачи смен, дни недели и часы ограничений">
+          <select className={inputCls} value={c.timezone} onChange={(e) => set({ timezone: e.target.value })}>
+            {!TZ_OPTIONS.some((o) => o.id === c.timezone) && <option value={c.timezone}>{c.timezone}</option>}
+            {TZ_OPTIONS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+          </select>
+        </Field>
         <Btn variant="danger" onClick={() => { if (confirm(`Удалить календарь «${c.name}»?`)) { update((s) => ({ ...s, calendars: s.calendars.filter((x) => x.id !== c.id) })); toast('Календарь удалён'); location.hash = '#/calendars' } }}>Удалить календарь</Btn>
       </div>
     </div>

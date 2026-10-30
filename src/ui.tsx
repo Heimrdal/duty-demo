@@ -1,7 +1,11 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { PEOPLE } from './data'
-import type { Calendar, CalendarType, EscStep, LayerKind, Person } from './types'
-import { calendarOnCall, layerOnCall, managerOf, nextInRotation } from './engine'
+import type { Calendar, CalendarType, LayerKind, Person } from './types'
+import { resolveChain } from './escalation'
+import { useStore } from './store'
+
+export { ESC_LABEL, resolveChain, type ChainLevel } from './escalation'
 
 export const TYPE_META: Record<CalendarType, { label: string; color: string; bg: string; icon: string }> = {
   sitcenter: { label: 'Ситуационный центр', color: '#e5484d', bg: '#fee2e2', icon: '' },
@@ -18,15 +22,6 @@ export const KIND_META: Record<LayerKind | 'override' | 'oneoff', { label: strin
   oneoff: { label: 'Разовое', color: '#be185d', bg: '#fce7f3' },
   override: { label: 'Подмена', color: '#be185d', bg: '#fce7f3', pattern: true },
 }
-export const ESC_LABEL: Record<EscStep['target'], string> = {
-  oncall: 'Дежурные сейчас',
-  next: 'Следующий по ротации',
-  lead: 'Лид группы',
-  manager: 'Руководитель дежурного',
-  person: 'Конкретный сотрудник',
-  sitcenter: 'Ситуационный центр',
-}
-
 const PALETTE = ['#2563eb', '#16a34a', '#db2777', '#ea580c', '#7c3aed', '#0891b2', '#ca8a04', '#dc2626', '#4f46e5', '#059669', '#9333ea', '#0d9488', '#c2410c', '#be123c', '#65a30d', '#0284c7', '#a21caf', '#b45309']
 export function personColor(id: string) {
   const idx = PEOPLE.findIndex((p) => p.id === id)
@@ -86,33 +81,90 @@ export function Btn({ children, onClick, variant = 'primary', className = '', ty
   return <button type={type} title={title} disabled={disabled} onClick={onClick} className={`inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium disabled:opacity-40 ${v} ${className}`}>{children}</button>
 }
 
-export function Modal({ title, children, onClose, wide }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+const openModals: HTMLElement[] = []
+
+/** Доступное модальное окно: role=dialog, aria-modal, фокус внутри, Esc закрывает, фокус возвращается к кнопке-инициатору, фон inert. */
+export function Modal({ title, children, onClose, wide, describedBy }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean; describedBy?: string }) {
   const closeRef = useRef(onClose)
+  const boxRef = useRef<HTMLDivElement>(null)
+  const titleId = useId()
   useEffect(() => { closeRef.current = onClose })
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') closeRef.current() }
-    window.addEventListener('keydown', key)
-    return () => window.removeEventListener('keydown', key)
+  useLayoutEffect(() => {
+    const box = boxRef.current!
+    const opener = document.activeElement as HTMLElement | null
+    openModals.push(box)
+    const root = document.getElementById('root')
+    root?.setAttribute('inert', '')
+    root?.setAttribute('aria-hidden', 'true')
+    const first = box.querySelector<HTMLElement>('[autofocus], [data-autofocus]') ?? box.querySelector<HTMLElement>(`.modal-body ${FOCUSABLE}`) ?? box
+    first.focus()
+    const key = (e: KeyboardEvent) => {
+      if (openModals[openModals.length - 1] !== box) return
+      if (e.key === 'Escape') { e.stopPropagation(); closeRef.current(); return }
+      if (e.key !== 'Tab') return
+      const items = [...box.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((x) => x.offsetParent !== null || x === document.activeElement)
+      if (!items.length) { e.preventDefault(); box.focus(); return }
+      const a = items[0]
+      const z = items[items.length - 1]
+      const cur = document.activeElement
+      if (e.shiftKey && (cur === a || !box.contains(cur))) { e.preventDefault(); z.focus() }
+      else if (!e.shiftKey && (cur === z || !box.contains(cur))) { e.preventDefault(); a.focus() }
+    }
+    document.addEventListener('keydown', key, true)
+    return () => {
+      document.removeEventListener('keydown', key, true)
+      openModals.splice(openModals.indexOf(box), 1)
+      if (!openModals.length) { root?.removeAttribute('inert'); root?.removeAttribute('aria-hidden') }
+      if (opener && document.contains(opener)) opener.focus()
+    }
   }, [])
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 pt-16" onMouseDown={onClose}>
-      <div className={`popover-in w-full ${wide ? 'max-w-3xl' : 'max-w-lg'} rounded-2xl border border-line bg-surface shadow-card`} onMouseDown={(e) => e.stopPropagation()}>
+      <div ref={boxRef} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={describedBy} tabIndex={-1}
+        className={`popover-in w-full outline-none ${wide ? 'max-w-3xl' : 'max-w-lg'} rounded-2xl border border-line bg-surface shadow-card`} onMouseDown={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 pt-5 pb-1">
-          <h3 className="text-lg font-semibold">{title}</h3>
-          <button onClick={onClose} aria-label="Закрыть" className="rounded-md px-2 text-xl leading-none text-faint hover:text-ink">×</button>
+          <h2 id={titleId} className="text-lg font-semibold">{title}</h2>
+          <button type="button" onClick={onClose} aria-label="Закрыть" title="Закрыть" className="rounded-md px-2 text-xl leading-none text-faint hover:text-ink">×</button>
         </div>
-        <div className="px-6 pt-3 pb-6">{children}</div>
+        <div className="modal-body px-6 pt-3 pb-6">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
-export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
+const CONTROL_TAGS = new Set(['input', 'select', 'textarea'])
+type ControlProps = { id?: string; 'aria-describedby'?: string; 'aria-invalid'?: boolean }
+
+/**
+ * Подпись поля. Для одиночного input/select/textarea — настоящий <label for>, подсказка и ошибка
+ * связаны через aria-describedby. Для группы кнопок — role=group с aria-labelledby.
+ */
+export function Field({ label, children, hint, error }: { label: string; children: ReactNode; hint?: string; error?: string }) {
+  const id = useId()
+  const hintId = hint ? `${id}-hint` : undefined
+  const errId = error ? `${id}-err` : undefined
+  const describedBy = [hintId, errId].filter(Boolean).join(' ') || undefined
+  const single = isValidElement(children) && (typeof children.type === 'string' ? CONTROL_TAGS.has(children.type) : children.type === LeadSelect)
+  if (single) {
+    const el = children as ReactElement<ControlProps>
+    const ctlId = el.props.id ?? `${id}-ctl`
+    return (
+      <div className="block">
+        <label htmlFor={ctlId} className="mb-1.5 block text-sm font-medium">{label}</label>
+        {cloneElement(el, { id: ctlId, 'aria-describedby': [el.props['aria-describedby'], describedBy].filter(Boolean).join(' ') || undefined, ...(error ? { 'aria-invalid': true } : {}) })}
+        {hint && <div id={hintId} className="mt-1.5 text-xs text-muted">{hint}</div>}
+        {error && <div id={errId} role="alert" className="mt-1.5 text-xs text-danger">{error}</div>}
+      </div>
+    )
+  }
   return (
-    <div className="block">
-      <div className="mb-1.5 text-sm font-medium">{label}</div>
+    <div className="block" role="group" aria-labelledby={`${id}-lbl`} aria-describedby={describedBy}>
+      <div id={`${id}-lbl`} className="mb-1.5 text-sm font-medium">{label}</div>
       {children}
-      {hint && <div className="mt-1.5 text-xs text-muted">{hint}</div>}
+      {hint && <div id={hintId} className="mt-1.5 text-xs text-muted">{hint}</div>}
+      {error && <div id={errId} role="alert" className="mt-1.5 text-xs text-danger">{error}</div>}
     </div>
   )
 }
@@ -153,32 +205,76 @@ export function Menu({ label = 'Ещё', items }: { label?: string; items: { lab
   )
 }
 
-/** Одна и та же легенда таймлайна: цвет человека, штриховка только у подмены. */
+/** Подмена: белая штриховка и пунктирная рамка внутри полосы. */
+export const SUBST_STYLE: CSSProperties = {
+  backgroundImage: 'repeating-linear-gradient(45deg, rgba(255,255,255,.45) 0 3px, transparent 3px 7px)',
+  boxShadow: 'inset 0 0 0 1.5px rgba(255,255,255,.95)',
+  outline: '1.5px dashed rgba(0,0,0,.35)',
+  outlineOffset: '-1.5px',
+}
+/** Конфликт: две смены одного человека сразу — сплошная оранжевая рамка и значок «!». Без штриховки. */
+export const CONFLICT_STYLE: CSSProperties = {
+  border: '2px solid var(--c-warn)',
+  background: 'color-mix(in srgb, var(--c-warn) 14%, transparent)',
+}
+
+/** Одна и та же легенда для всех таймлайнов. */
 export function ScheduleLegend() {
   return (
     <div data-testid="schedule-legend" className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-muted">
       <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-4 rounded-sm" style={{ background: '#2563eb' }} />цвет — человек</span>
-      <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-4 rounded-sm" style={{ background: '#2563eb', backgroundImage: 'repeating-linear-gradient(45deg, rgba(255,255,255,.7) 0 2px, transparent 2px 4px)' }} />штриховка — подмена</span>
-      <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-4 rounded-sm" style={{ outline: '2px solid var(--c-warn)' }} />оранжевый контур — две смены одного человека сразу</span>
-      <span className="inline-flex items-center gap-1.5"><span className="gap-band h-2.5 w-4 rounded-sm" />розовое «Нет дежурного» — в этот час никто не назначен</span>
+      <span className="inline-flex items-center gap-1.5"><span className="h-3 w-5 rounded-sm" style={{ background: '#2563eb', ...SUBST_STYLE }} />штриховка с пунктиром — подмена</span>
+      <span className="inline-flex items-center gap-1.5"><span className="relative inline-flex h-3 w-5 items-center justify-center rounded-sm text-[9px] font-bold text-warn" style={CONFLICT_STYLE}>!</span>оранжевая рамка с «!» — конфликт: две смены одного человека сразу</span>
+      <span className="inline-flex items-center gap-1.5"><span className="gap-band h-2.5 w-4 rounded-sm" />розовое «Нет дежурного» — никто не назначен</span>
+      <span>нажмите на смену — подробности</span>
     </div>
   )
 }
 
-export function LeadSelect({ people, teamFirst, value, onChange, allowEmpty = true, testId }: {
+export interface BarInfo { title: string; lines: string[]; rect: { left: number; top: number; bottom: number } }
+
+/** Карточка смены по клику или фокусу на полосе таймлайна. */
+export function BarCard({ info, onClose }: { info: BarInfo; onClose: () => void }) {
+  const closeRef = useRef(onClose)
+  useEffect(() => { closeRef.current = onClose })
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') closeRef.current() }
+    const down = (e: PointerEvent) => { if (!(e.target as HTMLElement).closest?.('[data-bar], [data-bar-card]')) closeRef.current() }
+    window.addEventListener('keydown', key)
+    window.addEventListener('pointerdown', down, true)
+    return () => { window.removeEventListener('keydown', key); window.removeEventListener('pointerdown', down, true) }
+  }, [])
+  const below = info.rect.bottom + 190 < window.innerHeight
+  return createPortal(
+    <div data-bar-card role="status" data-testid="bar-card" className="popover-in fixed z-50 w-72 rounded-lg border border-line bg-surface px-3 py-2.5 text-sm shadow-card"
+      style={{ left: Math.max(8, Math.min(info.rect.left, window.innerWidth - 300)), top: below ? info.rect.bottom + 6 : Math.max(8, info.rect.top - 196) }}>
+      <div className="font-medium">{info.title}</div>
+      {info.lines.map((l) => <div key={l} className="mt-0.5 text-muted">{l}</div>)}
+    </div>,
+    document.body,
+  )
+}
+export function barRect(el: Element) {
+  const r = el.getBoundingClientRect()
+  return { left: r.left, top: r.top, bottom: r.bottom }
+}
+
+export function LeadSelect({ people, teamFirst, value, onChange, allowEmpty = true, testId, ...aria }: {
   people: Person[]
   teamFirst: string[]
   value: string
   onChange: (id: string) => void
   allowEmpty?: boolean
   testId?: string
+  id?: string
+  'aria-describedby'?: string
 }) {
   const prefer = new Set(teamFirst)
   const head = people.filter((p) => prefer.has(p.id))
   const rest = people.filter((p) => !prefer.has(p.id))
   const opt = (p: Person) => <option key={p.id} value={p.id}>{p.name} — {p.title}</option>
   return (
-    <select data-testid={testId} className={inputCls} value={value} onChange={(e) => onChange(e.target.value)}>
+    <select {...aria} data-testid={testId} className={inputCls} value={value} onChange={(e) => onChange(e.target.value)}>
       {allowEmpty && <option value="">Выберите</option>}
       {head.length > 0 && <optgroup label="Сначала команда">{head.map(opt)}</optgroup>}
       {rest.length > 0 && <optgroup label={head.length ? 'Остальные сотрудники' : 'Сотрудники'}>{rest.map(opt)}</optgroup>}
@@ -203,49 +299,9 @@ export function Legend() {
   )
 }
 
-export interface ChainLevel { level: number; delayMin: number; label: string; people: Person[]; note?: string }
-
-/** Разворачивает правила эскалации календаря в конкретных людей на момент t */
-export function resolveChain(c: Calendar, people: Person[], t: number): ChainLevel[] {
-  const byId = (id: string) => people.find((p) => p.id === id)
-  const onCall = calendarOnCall(c, t).map((e) => byId(e.personId)).filter(Boolean) as Person[]
-  let acc = 0
-  return c.escalation.map((s, i) => {
-    acc += i === 0 ? 0 : s.delayMin
-    let ps: Person[] = []
-    let note: string | undefined
-    if (s.target === 'oncall') ps = onCall
-    if (s.target === 'next') {
-      const l = c.layers.find((x) => layerOnCall(x, t).length) ?? c.layers[0]
-      ps = l ? (nextInRotation(l, t).map(byId).filter(Boolean) as Person[]) : []
-      note = l ? `из слоя «${l.name}»` : undefined
-    }
-    if (s.target === 'lead') {
-      ps = [byId(c.leadId)!].filter(Boolean)
-      note = `лид календаря «${c.name}»`
-    }
-    if (s.target === 'manager') {
-      const pairs: { person: Person; manager: Person }[] = []
-      const seen = new Set<string>()
-      for (const p of onCall) {
-        const mg = managerOf(people, p.id)
-        if (!mg || seen.has(mg.id)) continue
-        seen.add(mg.id)
-        pairs.push({ person: p, manager: mg })
-      }
-      ps = pairs.map((p) => p.manager)
-      note = pairs.length
-        ? pairs.map((p) => `руководитель ${p.person.name}`).join(', ')
-        : 'нет дежурного — руководитель не берётся из другого календаря'
-    }
-    if (s.target === 'person' && s.personId) ps = [byId(s.personId)!].filter(Boolean)
-    if (s.target === 'sitcenter') { ps = [byId('u-sc-mgr')!].filter(Boolean); note = 'и звонок в дежурную смену СЦ' }
-    return { level: i + 1, delayMin: acc, label: ESC_LABEL[s.target], people: ps, note }
-  })
-}
-
-export function EscalationChain({ c, people, t, compact }: { c: Calendar; people: Person[]; t: number; compact?: boolean }) {
-  const chain = resolveChain(c, people, t)
+export function EscalationChain({ c, people, t, compact, calendars }: { c: Calendar; people: Person[]; t: number; compact?: boolean; calendars?: Calendar[] }) {
+  const chain = resolveChain(c, people, t, calendars)
+  const alreadyText = (lv: ReturnType<typeof resolveChain>[number]) => lv.already.map((a) => `${shortName(a.person.name)} — уже на уровне ${a.level}`).join(', ')
   if (compact) {
     return (
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
@@ -254,7 +310,7 @@ export function EscalationChain({ c, people, t, compact }: { c: Calendar; people
             {i > 0 && <span className="text-faint">→</span>}
             <span title={lv.note ? `${lv.label}. ${lv.note}` : lv.label}>
               <span className="text-faint">{lv.label}: </span>
-              {lv.people.length ? lv.people.map((p) => shortName(p.name)).join(', ') : '—'}
+              {lv.people.length ? lv.people.map((p) => shortName(p.name)).join(', ') : lv.already.length ? <span className="text-faint">пропуск, {alreadyText(lv)}</span> : '—'}
               {lv.delayMin > 0 && <span className="text-faint"> +{lv.delayMin} мин</span>}
             </span>
           </span>
@@ -274,8 +330,14 @@ export function EscalationChain({ c, people, t, compact }: { c: Calendar; people
               {lv.note && <span className="text-faint"> · {lv.note}</span>}
             </div>
             <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1">
-              {lv.people.length ? lv.people.map((p) => <PersonPill key={p.id} p={p} />) : <span className="text-sm text-danger">Никого — дыра в покрытии</span>}
+              {lv.people.map((p) => <PersonPill key={p.id} p={p} />)}
+              {!lv.people.length && !lv.already.length && <span className="text-sm text-danger">Никого — дыра в покрытии</span>}
             </div>
+            {lv.already.length > 0 && (
+              <div data-testid="esc-skip" className="mt-1 text-xs text-faint">
+                {lv.people.length ? 'Не дублируем: ' : 'Уровень пропущен — уже уведомлены: '}{alreadyText(lv)}
+              </div>
+            )}
           </div>
         </div>
       ))}
@@ -285,11 +347,51 @@ export function EscalationChain({ c, people, t, compact }: { c: Calendar; people
 
 export function PersonPill({ p, extra }: { p: Person; extra?: ReactNode }) {
   return (
-    <span className="inline-flex items-center gap-2 text-sm" title={`${p.telegram} · ${p.phone}`}>
+    <span className="inline-flex items-center gap-2 text-sm">
       <Avatar p={p} size={22} />
       <span>{p.name}</span>
       <span className="text-muted">{p.phone}</span>
+      <ContactActions p={p} />
       {extra}
+    </span>
+  )
+}
+
+const telHref = (phone: string) => 'tel:' + phone.replace(/[^\d+]/g, '')
+
+async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    let ok = false
+    try { ok = document.execCommand('copy') } catch { ok = false }
+    ta.remove()
+    return ok
+  }
+}
+
+const iconBtn = 'inline-flex h-6 w-6 items-center justify-center rounded-md text-faint hover:bg-surface-2 hover:text-ink focus-visible:text-ink'
+
+/** Быстрые действия: позвонить (tel:) и скопировать номер. */
+export function ContactActions({ p }: { p: Person }) {
+  const { toast } = useStore()
+  return (
+    <span className="inline-flex items-center gap-0.5" data-testid="contact-actions">
+      <a href={telHref(p.phone)} className={iconBtn} aria-label={`Позвонить: ${p.name}, ${p.phone}`} title={`Позвонить ${p.phone}`}>
+        <svg viewBox="0 0 24 24" aria-hidden className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2" /></svg>
+      </a>
+      <button type="button" className={iconBtn} aria-label={`Скопировать номер: ${p.name}`} title="Скопировать номер"
+        onClick={async () => toast((await copyText(p.phone)) ? `Номер ${p.phone} скопирован` : `Не удалось скопировать. Номер: ${p.phone}`)}>
+        <svg viewBox="0 0 24 24" aria-hidden className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 9h10v11H9z M5 15H4V4h11v1" /></svg>
+      </button>
     </span>
   )
 }

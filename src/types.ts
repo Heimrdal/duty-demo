@@ -7,7 +7,10 @@ export interface Person {
   id: string
   name: string
   title: string
-  team: string
+  /** Подразделение по оргструктуре. Не меняется при работе с дежурствами. */
+  orgUnit: string
+  /** Дежурные команды, в которых участвует сотрудник. Их может быть несколько. */
+  teams: string[]
   managerId?: string
   phone: string
   telegram: string
@@ -60,6 +63,7 @@ export interface Calendar {
   team: string
   ownerId: string
   leadId: string
+  /** IANA-зона календаря: в ней считаются передачи смен, часы слоёв и дни недели. */
   timezone: string
   layerMode: 'parallel' | 'priority'
   layers: Layer[]
@@ -86,6 +90,7 @@ export interface TgMessage {
   kind: TgKind
   text: string
   calendarId?: string
+  incidentId?: string
 }
 
 export interface State {

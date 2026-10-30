@@ -1,51 +1,51 @@
-import type { Calendar, Layer, Person, Restriction } from './types'
+import type { Calendar, Layer, Person, Restriction, Shift } from './types'
+import { addDaysTz, atDay, dayNumber, dayNumberOfIso, DEFAULT_TZ, fmtTz, isoDateTz, minutesOfDayTz, startOfDayTz, weekdayTz } from './tz'
 
 export const HOUR = 3600_000
 export const DAY = 24 * HOUR
 
 export const uid = () => Math.random().toString(36).slice(2, 10)
 
-export function startOfDay(d: Date | number) {
-  const x = new Date(d)
-  x.setHours(0, 0, 0, 0)
-  return x
+
+export { DEFAULT_TZ }
+
+/** Начало суток в зоне (по умолчанию МСК), а не в зоне браузера. */
+export function startOfDay(t: Date | number, tz: string = DEFAULT_TZ) {
+  return startOfDayTz(+t, tz)
 }
-export function addDays(d: Date | number, n: number) {
-  const x = new Date(d)
-  x.setDate(x.getDate() + n)
-  return x
+export function addDays(t: Date | number, n: number, tz: string = DEFAULT_TZ) {
+  return addDaysTz(+t, n, tz)
 }
 export function hm(s: string) {
   const [h, m] = s.split(':').map(Number)
   return h * 60 + (m || 0)
 }
-export function isoDate(d: Date) {
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+export function isoDate(t: Date | number, tz: string = DEFAULT_TZ) {
+  return isoDateTz(+t, tz)
 }
-export function weekday(d: Date) {
-  return (d.getDay() + 6) % 7 // 0 = Пн
-}
-
-/** Начало ротации слоя: дата startsAt + время передачи смены */
-export function layerAnchor(l: Layer) {
-  const d = new Date(l.startsAt + 'T00:00:00')
-  const m = hm(l.handoffTime)
-  d.setHours(Math.floor(m / 60), m % 60, 0, 0)
-  return d.getTime()
-}
-export function periodMs(l: Layer) {
-  return l.rotation.count * (l.rotation.unit === 'week' ? 7 : 1) * DAY
+export function weekday(t: Date | number, tz: string = DEFAULT_TZ) {
+  return weekdayTz(+t, tz) // 0 = Пн
 }
 
-export function inRestriction(r: Restriction, t: number) {
+export function periodDays(l: Pick<Layer, 'rotation'>) {
+  return l.rotation.count * (l.rotation.unit === 'week' ? 7 : 1)
+}
+/** Начало ротации слоя: дата startsAt + время передачи смены, в зоне календаря */
+export function layerAnchor(l: Layer, tz: string) {
+  return atDay(dayNumberOfIso(l.startsAt), hm(l.handoffTime), tz)
+}
+/** Момент передачи смены перед сменой номер idx (0 — начало ротации). */
+export function layerBoundary(l: Layer, idx: number, tz: string) {
+  return atDay(dayNumberOfIso(l.startsAt) + idx * periodDays(l), hm(l.handoffTime), tz)
+}
+
+export function inRestriction(r: Restriction, t: number, tz: string) {
   if (r.type === 'none') return true
-  const d = new Date(t)
-  const mins = d.getHours() * 60 + d.getMinutes()
+  const mins = minutesOfDayTz(t, tz)
   const from = hm(r.from)
   const to = hm(r.to)
   let inWindow: boolean
-  let dayForCheck = weekday(d)
+  let dayForCheck = weekdayTz(t, tz)
   if (from === to) inWindow = true
   else if (from < to) inWindow = mins >= from && mins < to
   else {
@@ -58,43 +58,42 @@ export function inRestriction(r: Restriction, t: number) {
   return true
 }
 
-/** Индекс ротации (номер смены) в момент t */
-export function rotationIndex(l: Layer, t: number) {
-  const a = layerAnchor(l)
-  if (t < a) return -1
-  return Math.floor((t - a) / periodMs(l))
+/** Индекс ротации (номер смены) в момент t. Сутки считаются по календарю зоны, поэтому переход на летнее время не сдвигает передачу. */
+export function rotationIndex(l: Layer, t: number, tz: string) {
+  if (t < layerAnchor(l, tz)) return -1
+  const eff = dayNumber(t, tz) - (minutesOfDayTz(t, tz) < hm(l.handoffTime) ? 1 : 0)
+  return Math.floor((eff - dayNumberOfIso(l.startsAt)) / periodDays(l))
 }
 
 /** Кто дежурит в слое в момент t (с учётом параллельных мест) */
-export function layerOnCall(l: Layer, t: number): string[] {
+export function layerOnCall(l: Layer, t: number, tz: string): string[] {
   const n = l.participants.length
   if (!n) return []
-  const idx = rotationIndex(l, t)
+  const idx = rotationIndex(l, t, tz)
   if (idx < 0) return []
-  if (!inRestriction(l.restriction, t)) return []
+  if (!inRestriction(l.restriction, t, tz)) return []
   const k = Math.min(l.parallel, n)
   const res: string[] = []
   for (let i = 0; i < k; i++) res.push(l.participants[(idx * k + i) % n])
   return res
 }
-export function layerSlot(l: Layer, t: number, slot: number): string | null {
-  return layerOnCall(l, t)[slot] ?? null
+export function layerSlot(l: Layer, t: number, slot: number, tz: string): string | null {
+  return layerOnCall(l, t, tz)[slot] ?? null
 }
 /** Следующий по ротации (OneUptime: "Next in rotation") */
-export function nextInRotation(l: Layer, t: number): string[] {
+export function nextInRotation(l: Layer, t: number, tz: string): string[] {
   const n = l.participants.length
   if (!n) return []
-  const idx = Math.max(rotationIndex(l, t), 0) + 1
+  const idx = Math.max(rotationIndex(l, t, tz), 0) + 1
   const k = Math.min(l.parallel, n)
   const res: string[] = []
   for (let i = 0; i < k; i++) res.push(l.participants[(idx * k + i) % n])
   return res
 }
-export function nextHandoff(l: Layer, t: number) {
-  const a = layerAnchor(l)
-  const p = periodMs(l)
+export function nextHandoff(l: Layer, t: number, tz: string) {
+  const a = layerAnchor(l, tz)
   if (t < a) return a
-  return a + (Math.floor((t - a) / p) + 1) * p
+  return layerBoundary(l, rotationIndex(l, t, tz) + 1, tz)
 }
 
 export interface OnCallEntry {
@@ -109,7 +108,7 @@ export interface OnCallEntry {
 export function calendarOnCall(c: Calendar, t: number): OnCallEntry[] {
   let entries: OnCallEntry[] = []
   for (const l of c.layers) {
-    const ids = layerOnCall(l, t)
+    const ids = layerOnCall(l, t, c.timezone)
     if (!ids.length) continue
     for (const id of ids) entries.push({ personId: id, layerId: l.id, layerName: l.name, kind: l.kind })
     if (c.layerMode === 'priority') break // OneUptime: верхний слой, где кто-то есть, перекрывает нижние
@@ -165,14 +164,11 @@ export function managerOf(people: Person[], id: string) {
   return p?.managerId ? people.find((x) => x.id === p.managerId) : undefined
 }
 
-export function fmtDT(t: number | string | Date) {
-  return new Date(t).toLocaleString('ru-RU', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+export function fmtDT(t: number | string | Date, tz: string = DEFAULT_TZ) {
+  return fmtTz(t, tz, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
 }
-export function fmtD(t: number | string | Date) {
-  return new Date(t).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', weekday: 'short' })
-}
-export function fmtT(t: number | string | Date) {
-  return new Date(t).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+export function fmtT(t: number | string | Date, tz: string = DEFAULT_TZ) {
+  return fmtTz(t, tz, { hour: '2-digit', minute: '2-digit' })
 }
 export function fmtDur(ms: number) {
   const h = Math.round(ms / HOUR)
@@ -207,7 +203,7 @@ export function personDutySpans(calendars: Calendar[], personId: string, from: n
     const replacedAt = (t: number) => c.shifts.some((s) => s.replacesPersonId === personId && t >= +new Date(s.start) && t < +new Date(s.end))
     for (const l of c.layers) {
       if (!l.participants.includes(personId)) continue
-      for (const s of sampleSegments(from, to, (t) => (replacedAt(t) || !layerOnCall(l, t).includes(personId) ? null : personId), step)) {
+      for (const s of sampleSegments(from, to, (t) => (replacedAt(t) || !layerOnCall(l, t, c.timezone).includes(personId) ? null : personId), step)) {
         out.push({ start: s.start, end: s.end, personId, calendarId: c.id, calendarName: c.name, layerId: l.id, layerName: l.name, kind: l.kind })
       }
     }
@@ -328,28 +324,25 @@ export function describePattern(l: Pick<Layer, 'participants' | 'parallel' | 'ro
   return { line, regular, onPeriods, offPeriods, parallel: k, people }
 }
 
-function handoffOn(dayStart: number, handoff: string) {
-  const d = new Date(dayStart)
-  const m = hm(handoff)
-  d.setHours(Math.floor(m / 60), m % 60, 0, 0)
-  return d.getTime()
+function handoffOn(t: number, handoff: string, tz: string) {
+  return atDay(dayNumber(t, tz), hm(handoff), tz)
 }
 
-/** Целые сутки от времени передачи смены. Прошедший интервал помечается past, частично прошедший сдвигается вперёд. */
-export function snapDuty(a: number, b: number, handoff: string, now = Date.now()) {
+/** Целые сутки от времени передачи смены (в зоне календаря). Прошедший интервал помечается past, частично прошедший сдвигается вперёд. */
+export function snapDuty(a: number, b: number, handoff: string, tz: string, now = Date.now()) {
   const s = Math.min(a, b)
   const e = Math.max(a, b)
-  let start = handoffOn(startOfDay(s).getTime(), handoff)
-  if (s < start) start -= DAY
-  let end = handoffOn(startOfDay(e).getTime(), handoff)
-  if (e > end) end += DAY
-  if (end <= start) end = start + DAY
+  let start = handoffOn(s, handoff, tz)
+  if (s < start) start = addDaysTz(start, -1, tz)
+  let end = handoffOn(e, handoff, tz)
+  if (e > end) end = addDaysTz(end, 1, tz)
+  if (end <= start) end = addDaysTz(start, 1, tz)
   if (end <= now) return { start, end, past: true, shifted: false }
   let shifted = false
   if (start < now) {
-    let next = handoffOn(startOfDay(now).getTime(), handoff)
-    if (next < now) next += DAY
-    if (next >= end) end = next + DAY
+    let next = handoffOn(now, handoff, tz)
+    if (next < now) next = addDaysTz(next, 1, tz)
+    if (next >= end) end = addDaysTz(next, 1, tz)
     start = next
     shifted = true
   }
@@ -360,21 +353,19 @@ export function calendarHandoff(layers: { handoffTime: string }[]) {
   return layers[0]?.handoffTime || '10:00'
 }
 
-export type SnapMode = 'hour' | 'day'
-
-/** Привязка интервала к часам или суткам. Конец всегда позже начала хотя бы на один шаг. */
-export function snapRange(a: number, b: number, mode: SnapMode): [number, number] {
-  let s = Math.min(a, b)
-  let e = Math.max(a, b)
-  if (mode === 'hour') {
-    s = Math.floor(s / HOUR) * HOUR
-    e = Math.ceil(e / HOUR) * HOUR
-    if (e - s < HOUR) e = s + HOUR
-  } else {
-    s = startOfDay(s).getTime()
-    const endDay = startOfDay(e).getTime()
-    e = e > endDay ? endDay + DAY : endDay
-    if (e - s < DAY) e = s + DAY
+/** Интервалы, где без этой смены в календаре никого не останется (только будущее). */
+export function shiftGap(c: Calendar, s: Shift, now: number): { start: number; end: number } | null {
+  const without = { ...c, shifts: c.shifts.filter((x) => x.id !== s.id) }
+  const a = Math.max(now, +new Date(s.start))
+  const b = +new Date(s.end)
+  let gs = -1
+  let ge = -1
+  for (let t = a; t < b; t += HOUR / 4) {
+    const probe = t === a ? t + 1 : t
+    if (calendarOnCall(without, probe).length === 0 && calendarOnCall(c, probe).length > 0) {
+      if (gs < 0) gs = t
+      ge = Math.min(b, t + HOUR / 4)
+    }
   }
-  return [s, e]
+  return gs < 0 ? null : { start: gs, end: ge }
 }
