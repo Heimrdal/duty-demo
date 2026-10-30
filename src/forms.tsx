@@ -422,13 +422,24 @@ export function AssignDutyModal({ c, init, onClose }: { c: Calendar; init?: Assi
   const inPast = !empty && (editing ? eT <= Date.now() : sT < Date.now() - 5 * 60_000)
   const onCall = !empty ? calendarOnCall({ ...c, shifts: c.shifts.filter((x) => x.id !== editing?.id) }, Math.max(sT, Date.now()) + 1) : []
   const replaceOptions = [...new Set([...onCall.map((e) => e.personId), ...(initReplaces ? [initReplaces] : [])])].filter((id) => id !== personId)
-  const error = !personId ? 'Выберите, кто дежурит' : empty ? 'Укажите начало и окончание' : eT <= sT ? 'Окончание раньше начала' : inPast ? 'Интервал уже прошёл — выберите будущее время' : mode === 'replace' && !replaces ? 'Выберите, кого заменить' : ''
-  const valid = !error
   const name = (id?: string) => state.people.find((p) => p.id === id)?.name ?? ''
+  // выбранный «кого заменить» мог выпасть из списка (например, выбрали его же дежурным) — тогда не отправляем
+  const target = replaceOptions.includes(replaces) ? replaces : ''
+  const error = !personId ? 'Выберите, кто дежурит' : empty ? 'Укажите начало и окончание' : eT <= sT ? 'Окончание раньше начала' : inPast ? 'Интервал уже прошёл — выберите будущее время'
+    : mode === 'replace' && replaces && replaces === personId ? `${name(personId)} уже на этой смене — выберите другого дежурного`
+    : mode === 'replace' && !target ? 'Выберите, кого заменить' : ''
+  const valid = !error
 
   const submit = () => {
     if (!valid) return
-    const fresh = makeShift({ personId, start: sT, end: eT, replacesPersonId: mode === 'replace' ? replaces : undefined, note: note || (mode === 'replace' ? `Замена: ${name(replaces)}` : 'Назначено лидом') })
+    const replaces = target
+    let fresh: Shift
+    try {
+      fresh = makeShift({ personId, start: sT, end: eT, replacesPersonId: mode === 'replace' ? replaces : undefined, note: note || (mode === 'replace' ? `Замена: ${name(replaces)}` : 'Назначено лидом') })
+    } catch (e) {
+      toast(`Не удалось назначить: ${(e as Error).message}`)
+      return
+    }
     const shift = editing ? { ...fresh, id: editing.id, createdAt: editing.createdAt } : fresh
     updateCalendar(c.id, (cal) => upsertShift(cal, shift))
     const when = `С ${fmtDT(sT, tz)} по ${fmtDT(eT, tz)} ${zl} (${fmtDur(eT - sT)})`
@@ -461,7 +472,7 @@ export function AssignDutyModal({ c, init, onClose }: { c: Calendar; init?: Assi
         </Field>
         {mode === 'replace' && (
           <Field label="Кого заменить">
-            <select data-testid="assign-replaces" className={inputCls} value={replaces} onChange={(e) => setReplaces(e.target.value)}>
+            <select data-testid="assign-replaces" className={inputCls} value={target} onChange={(e) => setReplaces(e.target.value)}>
               <option value="">Выберите</option>
               {replaceOptions.map((id) => <option key={id} value={id}>{name(id)}</option>)}
             </select>

@@ -4,7 +4,7 @@ import { addDays, calendarHandoff, calendarOnCall, DEFAULT_TZ, fmtDT, fmtDur, fm
 import { useNow, useStore } from './store'
 import { fmtTz, startOfMonthTz, tzLabel, tzName } from './tz'
 import type { Calendar, Person } from './types'
-import { barRect, BarCard, CONFLICT_STYLE, personColor, ScheduleLegend, shortName, SUBST_STYLE, type BarInfo } from './ui'
+import { barRect, BarCard, blurClosesCard, CONFLICT_STYLE, personColor, ScheduleLegend, shortName, SUBST_STYLE, type BarInfo } from './ui'
 
 type Zoom = 'day' | 'week' | '2w' | 'month'
 type Drag =
@@ -530,7 +530,7 @@ function PersonRow({ person, me, lead, guest, items, overlaps, laneCount, box, s
               tabIndex={0}
               aria-label={`${person.name}: ${duty.layerName}, ${duty.calendarName}, ${fmtDT(duty.start)} — ${fmtDT(duty.end)}${hatch ? ', подмена' : ''}${overlapped ? ', конфликт' : ''}`}
               onFocus={(e) => onOpenCard(e.currentTarget, duty, overlapped)}
-              onBlur={onCloseCard}
+              onBlur={(e) => { if (blurClosesCard(e.relatedTarget)) onCloseCard() }}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenCard(e.currentTarget, duty, overlapped) } }}
               className={`absolute flex items-center overflow-hidden rounded-md px-1 text-[10px] font-medium whitespace-nowrap text-white focus-visible:ring-2 focus-visible:ring-ink ${me ? 'cursor-pointer' : 'cursor-grab'} ${dim ? 'opacity-40' : ''}`}
               style={{

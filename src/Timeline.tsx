@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { addDays, calendarOnCall, fmtDT, fmtDur, HOUR, layerSlot, sampleSegments, startOfDay, weekday, type Segment } from './engine'
 import { useStore } from './store'
 import { fmtTz, tzName, zparts } from './tz'
-import { barRect, BarCard, KIND_META, personColor, shortName, SUBST_STYLE, type BarAction, type BarInfo } from './ui'
+import { barRect, BarCard, blurClosesCard, KIND_META, personColor, shortName, SUBST_STYLE, type BarAction, type BarInfo } from './ui'
 import type { Calendar, Shift } from './types'
 
 /** Что знает таймлайн о смене, по которой кликнули: для действий лида. */
@@ -122,7 +122,7 @@ export function Timeline({ c, from, days, now, actions }: { c: Calendar; from: n
                     aria-label={p ? `${p.name}, ${lines.join(', ')}` : undefined}
                     onClick={(e) => open(e.currentTarget)}
                     onFocus={(e) => open(e.currentTarget)}
-                    onBlur={(e) => { if (!(e.relatedTarget as HTMLElement | null)?.closest?.('[data-bar-card]')) setInfo(null) }}
+                    onBlur={(e) => { if (blurClosesCard(e.relatedTarget)) setInfo(null) }}
                     className="absolute top-1 bottom-1 cursor-pointer overflow-hidden rounded-md px-1 text-[10px] leading-7 font-medium whitespace-nowrap text-white focus-visible:ring-2 focus-visible:ring-ink"
                     style={{
                       left: `${left}%`, width: `calc(${width}% - 2px)`, background: col,

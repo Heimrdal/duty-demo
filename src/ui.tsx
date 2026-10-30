@@ -256,7 +256,7 @@ export function BarCard({ info, onClose }: { info: BarInfo; onClose: () => void 
       {acts.length > 0 && (
         <div className="mt-2.5 flex flex-wrap gap-1 border-t border-line pt-2">
           {acts.map((a) => (
-            <button key={a.label} type="button" onClick={() => { onClose(); a.onClick() }} className={`rounded-md px-2 py-1 text-xs font-medium hover:bg-surface-2 ${a.danger ? 'text-danger' : 'text-accent'}`}>{a.label}</button>
+            <button key={a.label} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => { onClose(); a.onClick() }} className={`rounded-md px-2 py-1 text-xs font-medium hover:bg-surface-2 ${a.danger ? 'text-danger' : 'text-accent'}`}>{a.label}</button>
           ))}
         </div>
       )}
@@ -264,6 +264,16 @@ export function BarCard({ info, onClose }: { info: BarInfo; onClose: () => void 
     document.body,
   )
 }
+/**
+ * Закрывать ли карточку смены, когда полоса теряет фокус. Только если фокус ушёл на другой элемент
+ * вне карточки (Tab с клавиатуры). В Safari/iOS кнопка при клике фокус не получает и relatedTarget = null:
+ * раньше карточка закрывалась до click, и кнопки в ней «не работали». Клики мимо закрывает обработчик pointerdown.
+ */
+export function blurClosesCard(related: EventTarget | null) {
+  const el = related as HTMLElement | null
+  return !!el && !el.closest?.('[data-bar-card]')
+}
+
 export function barRect(el: Element) {
   const r = el.getBoundingClientRect()
   return { left: r.left, top: r.top, bottom: r.bottom }
